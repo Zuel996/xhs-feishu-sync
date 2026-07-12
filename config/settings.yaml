@@ -1,0 +1,52 @@
+# ── 主配置文件 ──
+# 敏感信息（密钥、token）通过环境变量注入，参考 .env.example
+
+# 数据采集策略: "browser" | "api" | "hybrid" | "csv"
+collection:
+  strategy: "browser"
+  fallback_strategy: "csv"
+
+  # 浏览器采集配置
+  browser:
+    cdp_endpoint: "http://localhost:9222"
+    headless: false
+    min_delay_seconds: 1.5
+    max_delay_seconds: 5.0
+    request_timeout_seconds: 30
+    max_notes_per_account: 100       # 单次最多采集最近N篇笔记
+    storage_state_path: ".browser_state/storage.json"
+
+# 调度配置
+schedule:
+  cron: "0 8 * * *"                  # 每天 8:00
+  timezone: "Asia/Shanghai"
+  retry_count: 3
+  retry_delay_seconds: 300           # 重试间隔5分钟
+  coalesce: true                     # 跳过错过的执行
+  misfire_grace_time: 3600           # 1小时容差
+
+# 本地存储
+storage:
+  sqlite_path: "data/local.db"
+  retention_days: 90                 # 保留90天原始快照
+
+# 日志
+logging:
+  level: "INFO"
+  file: "logs/sync.log"
+  max_bytes: 10485760                # 10 MB
+  backup_count: 30
+  format: "json"                     # "json" | "console"
+
+# 飞书配置（凭证从环境变量读取）
+feishu:
+  app_id: "${FEISHU_APP_ID}"
+  app_secret: "${FEISHU_APP_SECRET}"
+  bitable_app_token: "${FEISHU_BITABLE_APP_TOKEN}"
+  bot_webhook_url: "${FEISHU_BOT_WEBHOOK_URL}"
+
+# 小红书 API 配置（可选，从环境变量读取）
+xhs_api:
+  app_key: "${XHS_APP_KEY}"
+  app_secret: "${XHS_APP_SECRET}"
+  base_url: "https://open-api.xiaohongshu.com"

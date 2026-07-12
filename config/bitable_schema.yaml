@@ -1,0 +1,131 @@
+# ── 飞书多维表格 Schema 定义 ──
+# 定义4张数据表的字段结构
+
+tables:
+  # 表1: 账号概览
+  account_summary:
+    name: "账号概览"
+    fields:
+      - name: "账号名称"
+        type: 1        # Text
+      - name: "账号类型"
+        type: 3        # SingleSelect
+        options:
+          - name: "自有账号"
+            color: 1   # Blue
+          - name: "竞品账号"
+            color: 2   # Red
+      - name: "XHS用户ID"
+        type: 1
+      - name: "粉丝数"
+        type: 2        # Number
+      - name: "关注数"
+        type: 2
+      - name: "获赞与收藏"
+        type: 2
+      - name: "粉丝日增量"
+        type: 2
+      - name: "粉丝周增量"
+        type: 2
+      - name: "粉丝增长率(%)"
+        type: 2
+      - name: "近30天笔记数"
+        type: 2
+      - name: "平均互动率(%)"
+        type: 2
+      - name: "竞品排名"
+        type: 2
+      - name: "排名变化"
+        type: 1
+      - name: "数据更新时间"
+        type: 5        # DateTime
+      - name: "异常标记"
+        type: 7        # Checkbox
+
+  # 表2: 笔记数据明细
+  note_metrics:
+    name: "笔记数据明细"
+    fields:
+      - name: "笔记ID"
+        type: 1
+      - name: "所属账号"
+        type: 1
+      - name: "笔记标题"
+        type: 1
+      - name: "发布日期"
+        type: 5
+      - name: "笔记类型"
+        type: 3
+        options:
+          - name: "图文"
+            color: 1
+          - name: "视频"
+            color: 3
+      - name: "笔记链接"
+        type: 15       # URL
+      - name: "浏览量"
+        type: 2
+      - name: "点赞数"
+        type: 2
+      - name: "收藏数"
+        type: 2
+      - name: "评论数"
+        type: 2
+      - name: "分享数"
+        type: 2
+      - name: "总互动量"
+        type: 2
+      - name: "互动率(%)"
+        type: 2
+      - name: "浏览量日增量"
+        type: 2
+      - name: "点赞日增量"
+        type: 2
+      - name: "数据抓取日期"
+        type: 5
+
+  # 表3: 每日快照
+  daily_snapshot:
+    name: "每日快照"
+    fields:
+      - name: "快照日期"
+        type: 5
+      - name: "账号名称"
+        type: 1
+      - name: "粉丝数"
+        type: 2
+      - name: "关注数"
+        type: 2
+      - name: "获赞与收藏总数"
+        type: 2
+      - name: "当日新增笔记数"
+        type: 2
+      - name: "当日笔记总互动"
+        type: 2
+      - name: "当日笔记总浏览"
+        type: 2
+
+  # 表4: 竞品对比
+  competitor_comparison:
+    name: "竞品对比"
+    fields:
+      - name: "排名"
+        type: 2
+      - name: "账号名称"
+        type: 1
+      - name: "粉丝数"
+        type: 2
+      - name: "粉丝日增量"
+        type: 2
+      - name: "粉丝周增量"
+        type: 2
+      - name: "总互动量"
+        type: 2
+      - name: "互动率(%)"
+        type: 2
+      - name: "近7天发布笔记数"
+        type: 2
+      - name: "平均笔记互动量"
+        type: 2
+      - name: "对比日期"
+        type: 5
