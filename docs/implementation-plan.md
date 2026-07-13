@@ -178,8 +178,9 @@
 - [x] `platform` 字段添加（4张SQLite表 + 4张飞书表）✅
 - [x] `scripts/start_chrome.bat` 一键启动 Chrome 调试模式 ✅
 - [x] 历史数据导入（Excel 22篇笔记 + 21天快照覆盖1-7月）✅
-- [ ] 笔记数据自动采集（浏览器拿笔记仍依赖 CSV fallback）
-- [ ] `note_detail_new` API 响应结构解析（创作者中心笔记数据源已拦截）
+- [x] 笔记数据自动采集（浏览器 `note/analyze/list` API 解析）✅
+- [x] `note_detail_new` / datacenter 系列 API 响应结构解析 ✅
+- [x] 浏览器 + CSV 合并策略（浏览器优先，CSV 补充去重）✅
 
 ### Step 6.5: 生产硬化
 - [ ] 清理调试日志/注释代码
@@ -198,6 +199,6 @@
 5. ✅ **CDP 浏览器采集** — hybrid 模式验证通过 (2026-07-13)
 6. ✅ **`platform` 字段** — 4表SQLite + 4表飞书 (2026-07-13)
 7. ✅ **`scripts/start_chrome.bat`** — Chrome 一键启动 (2026-07-13)
-8. ⬜ **`note_detail_new` API 解析** — 笔记数据自动采集（当前依赖CSV）
+8. ✅ **`note_detail_new` API 解析** — 笔记数据自动采集（完成于 2026-07-13）
 9. ⬜ **Bot 通知验证** — 配置 webhook 后测试
 10. ⬜ **README 编写**

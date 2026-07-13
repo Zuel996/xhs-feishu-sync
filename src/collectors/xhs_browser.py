@@ -56,8 +56,19 @@ XHS_API_URL_PATTERNS = [
     # 创作者中心 - 账号数据
     "/api/galaxy/creator/home/personal_info",
     # 创作者中心 - 笔记数据
+    "/api/galaxy/creator/data/note_detail_new",
     "/api/galaxy/creator/data/note",
+    # 创作者中心 - 统计页（data-analysis / fans-data / account/v2）
+    "/api/galaxy/creator/statistics/",
+    "/api/galaxy/creator/data/statistics/",
+    # 创作者中心 - 笔记分析列表（每篇笔记的互动数据）
+    "/api/galaxy/creator/datacenter/note/analyze/list",
+    # 创作者中心 - 直播数据
+    "/api/galaxy/v2/creator/live_rooms",
     # 创作者中心 - 数据中心
+    "/api/galaxy/v2/creator/datacenter/account",
+    "/api/galaxy/v2/creator/datacenter/livedata",
+    "/api/galaxy/v2/creator/datacenter/leaderboard",
     "/api/galaxy/v2/creator/datacenter",
     # 个人主页 - 用户信息
     "/api/sns/web/v1/user/otherinfo",
@@ -70,6 +81,9 @@ XHS_API_URL_PATTERNS = [
 
 # 创作者中心 URL
 XHS_CREATOR_URL = "https://creator.xiaohongshu.com"
+XHS_CREATOR_NOTE_ANALYSIS_URL = "https://creator.xiaohongshu.com/statistics/data-analysis"
+XHS_CREATOR_FANS_URL = "https://creator.xiaohongshu.com/statistics/fans-data"
+XHS_CREATOR_ACCOUNT_URL = "https://creator.xiaohongshu.com/statistics/account/v2"
 
 
 class XHSBrowserCollector(BaseCollector):
@@ -109,6 +123,10 @@ class XHSBrowserCollector(BaseCollector):
         self._is_logged_in: bool = False
         self._http: Optional[httpx.AsyncClient] = None
         self._listen_task: Optional[asyncio.Task] = None
+        self._cached_creator_notes: list[NoteMetrics] = []
+        # API 发现模式：记录所有网络请求 URL（用于发现新 API 路径）
+        self._discover_mode: bool = False
+        self._discovered_urls: list[str] = []
 
     # ── CDP 底层通信 ──
 
@@ -160,9 +178,9 @@ class XHSBrowserCollector(BaseCollector):
         if method == "Network.responseReceived":
             response = params.get("response", {})
             url = response.get("url", "")
-            # 临时：记录所有 API 调用到 debug 日志
-            # 调试用：如需排查 API 拦截问题，取消下面注释
-            # logger.debug("CDP Network: [%s] %s", response.get("status", 0), url[:150])
+            # API 发现模式：记录所有 API 请求 URL
+            if self._discover_mode:
+                self._discovered_urls.append(url)
             if any(pattern in url for pattern in XHS_API_URL_PATTERNS):
                 rid = params["requestId"]
                 self._pending_api_requests[rid] = url
@@ -418,6 +436,12 @@ class XHSBrowserCollector(BaseCollector):
         logger.info("共拦截 %d 个 API 响应，%d 个待拉取",
                      len(self._api_responses), len(self._pending_api_requests))
 
+        # 同时提取笔记数据（note_detail_new API）
+        notes = self._extract_notes_from_creator_api(account)
+        if notes:
+            self._cached_creator_notes = notes
+            logger.info("从创作者中心缓存 %d 篇笔记数据", len(notes))
+
         return self._extract_profile_from_creator_api(account)
 
     async def _collect_profile_from_profile_page(
@@ -454,9 +478,13 @@ class XHSBrowserCollector(BaseCollector):
     async def collect_notes_data(
         self, account: AccountInfo, target_date: Optional[date] = None
     ) -> list[NoteMetrics]:
-        """采集账号的笔记数据。"""
+        """采集账号的笔记数据（三级策略）。
+
+        策略 1: 复用 _collect_profile_from_creator 缓存的笔记（note_detail_new API）
+        策略 2: 导航到创作者中心 statistics/data-analysis 页面拦截 API
+        策略 3: 降级到个人主页 public API + __INITIAL_STATE__
+        """
         await self._check_login_state()
-        self._api_responses.clear()
 
         logger.info(
             "采集笔记数据: %s (目标日期: %s, 最多 %d 篇)",
@@ -465,57 +493,136 @@ class XHSBrowserCollector(BaseCollector):
             self.max_notes,
         )
 
+        # ── 策略 1: 使用创作者中心缓存的笔记 ──
+        if self._cached_creator_notes:
+            notes = self._cached_creator_notes
+            self._cached_creator_notes = []
+            logger.info("使用创作者中心缓存: %d 篇笔记", len(notes))
+            return self._filter_notes(notes, target_date)
+
+        # ── 策略 2: 导航到 statistics/data-analysis ──
+        notes = await self._collect_notes_from_creator_center(account)
+        if notes:
+            return self._filter_notes(notes, target_date)
+
+        # ── 策略 3: 个人主页降级 ──
         try:
-            # 导航到账号主页（如果还没在）
+            self._api_responses.clear()
             profile_url = f"{XHS_USER_PROFILE_URL}{account.xhs_user_id}"
             await self._navigate(profile_url)
             await self._random_delay(3, 6)
-
-            # 等待 API 响应和页面渲染
             await asyncio.sleep(2)
             await self._detect_captcha()
 
-            # 1. 从 API 响应获取笔记
             notes = self._extract_notes_from_api(account)
-
-            # 2. 降级: 从 __INITIAL_STATE__ 获取
             if not notes:
                 logger.info("API 响应未获取到笔记，尝试从页面获取")
                 notes = await self._extract_notes_from_page(account)
 
-            # 3. 如果数据不足，滚动加载更多
             if len(notes) < min(10, self.max_notes):
                 logger.info("笔记数据不足（%d篇），尝试滚动加载...", len(notes))
                 await self._scroll_page(times=5)
                 await self._random_delay(2, 4)
-
-                # 重新尝试获取
                 more_notes = self._extract_notes_from_api(account)
                 if not more_notes:
                     more_notes = await self._extract_notes_from_page(account)
-
                 existing_ids = {n.note_id for n in notes}
                 for n in more_notes:
                     if n.note_id and n.note_id not in existing_ids:
                         notes.append(n)
-                        existing_ids.add(n.note_id)
-
-            # 按目标日期过滤
-            if target_date:
-                notes = [
-                    n for n in notes
-                    if n.publish_date and n.publish_date == target_date
-                ]
-
-            notes = notes[:self.max_notes]
-            logger.info(
-                "笔记采集完成: %s — %d 篇",
-                account.display_name, len(notes)
-            )
-            return notes
-
         except Exception as e:
             raise CollectorError(f"采集笔记数据失败: {e}") from e
+
+        return self._filter_notes(notes, target_date)
+
+    def _filter_notes(
+        self, notes: list[NoteMetrics], target_date: Optional[date] = None
+    ) -> list[NoteMetrics]:
+        """按目标日期过滤并限制数量。"""
+        if target_date:
+            notes = [n for n in notes if n.publish_date and n.publish_date == target_date]
+        notes = notes[:self.max_notes]
+        logger.info("笔记采集完成: %d 篇", len(notes))
+        return notes
+
+    async def _collect_notes_from_creator_center(
+        self, account: AccountInfo
+    ) -> list[NoteMetrics]:
+        """导航到创作者中心 statistics/data-analysis 页面采集笔记数据。
+
+        该页面加载时会自动调用笔记数据 API，我们拦截并解析响应。
+        启用 API 发现模式，记录所有网络请求 URL 用于后续分析。
+        """
+        self._api_responses.clear()
+        self._discovered_urls.clear()
+        self._discover_mode = True
+
+        try:
+            logger.info("访问创作者中心数据分析页: %s", account.display_name)
+            await self._navigate(XHS_CREATOR_NOTE_ANALYSIS_URL)
+            await self._random_delay(5, 8)  # 等待 SPA 渲染 + API 调用
+            await self._detect_captcha()
+
+            # 发现模式：捕获所有 API 请求的 body（不限于已知 patterns）
+            await self._fetch_pending_api_bodies()
+            await self._fetch_discovered_api_bodies()
+
+            logger.info("数据分析页拦截: %d 个 API 响应, %d 个待拉取, %d 个全部网络请求",
+                         len(self._api_responses), len(self._pending_api_requests),
+                         len(self._discovered_urls))
+
+            # Dump 所有发现的 URL 供分析
+            self._dump_discovered_urls()
+
+            # 尝试从所有拦截到的 API 中提取笔记
+            notes = self._extract_notes_from_creator_api(account)
+
+            # 也从公开页 API 结构尝试（兼容多种数据源）
+            if not notes:
+                notes = self._extract_notes_from_api(account)
+
+            return notes
+        except (AccountNotFoundError, RateLimitError, CaptchaDetectedError):
+            raise
+        except Exception as e:
+            logger.warning("创作者中心笔记采集异常: %s", e)
+            return []
+        finally:
+            self._discover_mode = False
+
+    async def _fetch_discovered_api_bodies(self):
+        """发现模式：拉取所有未被已知 patterns 覆盖的 API 响应体。"""
+        import re
+        # 筛选出创作者中心 API 调用（在 _pending_api_requests 中未覆盖的）
+        api_pattern = re.compile(r"api/galaxy|api/sns|api/edith")
+        new_urls = []
+        for url in self._discovered_urls:
+            if api_pattern.search(url):
+                # 检查是否已被已知 patterns 覆盖
+                if not any(pattern in url for pattern in XHS_API_URL_PATTERNS):
+                    new_urls.append(url)
+
+        if new_urls:
+            logger.info("发现 %d 个新的 API 路径（未被已知 patterns 覆盖）", len(new_urls))
+            # 保存到文件供分析
+            discover_file = Path("data/debug/discovered_api_urls.txt")
+            discover_file.parent.mkdir(parents=True, exist_ok=True)
+            discover_file.write_text("\n".join(sorted(set(new_urls))), encoding="utf-8")
+
+    def _dump_discovered_urls(self):
+        """将发现模式收集到的全部网络请求 URL 写入文件。"""
+        if not self._discovered_urls:
+            return
+        seen = set()
+        unique = []
+        for url in self._discovered_urls:
+            if url not in seen:
+                seen.add(url)
+                unique.append(url)
+        filepath = Path("data/debug/all_network_urls.txt")
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        filepath.write_text("\n".join(sorted(unique)), encoding="utf-8")
+        logger.info("✓ 全部网络请求 URL 已保存: %s (%d 条)", filepath, len(unique))
 
     async def _scroll_page(self, times: int = 3):
         """滚动页面加载更多内容。"""
@@ -557,6 +664,262 @@ class XHSBrowserCollector(BaseCollector):
                 )
 
         return None
+
+    def _extract_notes_from_creator_api(
+        self, account: AccountInfo
+    ) -> list[NoteMetrics]:
+        """从创作者中心 API 响应中提取笔记数据。
+
+        解析 note_detail_new / datacenter 等 API 的响应结构。
+        不认识的字段结构会 dump 到 data/debug/ 供人工分析。
+        """
+        notes: list[NoteMetrics] = []
+        seen_ids: set[str] = set()
+
+        for resp in self._api_responses:
+            url = resp.get("url", "")
+            data = resp.get("data", {})
+
+            # ── 分支 1: note_detail_new ──
+            if "note_detail_new" in url:
+                parsed = self._parse_note_detail_new(data, account)
+                if parsed:
+                    logger.info("note_detail_new 解析到 %d 篇笔记", len(parsed))
+                else:
+                    # 结构未知 → dump 到文件
+                    self._dump_debug_response("note_detail_new", data)
+                for n in parsed:
+                    if n.note_id and n.note_id not in seen_ids:
+                        notes.append(n)
+                        seen_ids.add(n.note_id)
+
+            # ── 分支 2: datacenter/account 概览数据 ──
+            elif "datacenter/account" in url:
+                self._dump_debug_response("datacenter_account", data)
+
+            # ── 分支 3: datacenter/livedata ──
+            elif "datacenter/livedata" in url:
+                self._dump_debug_response("datacenter_livedata", data)
+
+            # ── 分支 4: datacenter/leaderboard ──
+            elif "datacenter/leaderboard" in url:
+                self._dump_debug_response("datacenter_leaderboard", data)
+
+            # ── 分支 5: datacenter/note/analyze/list（单篇笔记数据）──
+            elif "datacenter/note/analyze" in url:
+                self._dump_debug_response("note_analyze_list", data)
+                parsed = self._parse_note_analyze_list(data, account)
+                if parsed:
+                    logger.info("note/analyze/list 解析到 %d 篇笔记", len(parsed))
+                for n in parsed:
+                    if n.note_id and n.note_id not in seen_ids:
+                        notes.append(n)
+                        seen_ids.add(n.note_id)
+
+            # ── 分支 6: 未知的创作者中心 API（dump 供分析）──
+            elif "api/galaxy" in url:
+                name = url.split("/api/galaxy/")[-1].split("?")[0].replace("/", "_")[:60]
+                self._dump_debug_response(f"unknown_{name}", data)
+
+        return notes
+
+    def _parse_note_detail_new(
+        self, data: dict, account: AccountInfo
+    ) -> list[NoteMetrics]:
+        """尝试解析 note_detail_new 响应（多种可能结构）。"""
+        notes: list[NoteMetrics] = []
+
+        # 创作者中心 API 常见外层: {"code": 0, "success": true, "data": {...}}
+        inner = data.get("data", data)
+
+        # ── 尝试 1: 直接是笔记列表 ──
+        note_list = inner.get("notes", inner.get("note_list", inner.get("list", [])))
+
+        # ── 尝试 2: 嵌套在 data 字段内 ──
+        if not note_list:
+            nested = inner.get("data", {})
+            note_list = nested.get("notes", nested.get("note_list", nested.get("list", [])))
+
+        # ── 尝试 3: note_detail 或 noteDetail ──
+        if not note_list:
+            note_list = inner.get("note_detail", inner.get("noteDetail", []))
+
+        # ── 尝试 4: items 字段 ──
+        if not note_list:
+            note_list = inner.get("items", [])
+
+        # ── 尝试 5: 整个 inner 可能是 dict，按 key 找数组 ──
+        if not note_list and isinstance(inner, dict):
+            for key, val in inner.items():
+                if isinstance(val, list) and len(val) > 0:
+                    if isinstance(val[0], dict) and any(
+                        k in val[0] for k in ("note_id", "id", "title", "view", "like")
+                    ):
+                        note_list = val
+                        logger.debug("note_detail_new: 从字段 '%s' 发现笔记列表", key)
+                        break
+
+        if not note_list:
+            logger.debug("note_detail_new: 未识别到笔记列表结构，keys=%s",
+                         list(inner.keys())[:10] if isinstance(inner, dict) else type(inner))
+            return []
+
+        # 解析每条笔记 — 尝试多种字段名
+        for item in note_list:
+            if not isinstance(item, dict):
+                continue
+
+            note_id = str(
+                item.get("note_id", item.get("noteId", item.get("id", "")))
+            )
+            if not note_id:
+                continue
+
+            # 互动数据: 优先 item 顶层，其次 interact_info / note_stat
+            stats = item.get("interact_info", item.get("interactInfo",
+                    item.get("note_stat", item.get("noteStat", item))))
+
+            note = NoteMetrics(
+                note_id=note_id,
+                account_id=account.account_id,
+                title=item.get("title", item.get("display_title", item.get("displayTitle", ""))),
+                note_type=self._safe_note_type(item),
+                publish_date=self._parse_timestamp(
+                    item.get("publish_time", item.get("time", item.get("create_time", 0)))
+                ),
+                url=item.get("url", item.get("note_url", f"{XHS_NOTE_DETAIL_URL}{note_id}")),
+                views=self._safe_int(stats.get("view_count", stats.get("viewCount",
+                                     item.get("view_count", item.get("viewCount", 0))))),
+                likes=self._safe_int(stats.get("like_count", stats.get("likeCount",
+                                     item.get("liked_count", item.get("likedCount",
+                                     stats.get("liked_count", stats.get("likedCount", 0))))))),
+                favorites=self._safe_int(stats.get("collect_count", stats.get("collectCount",
+                                         item.get("collected_count", item.get("collectedCount",
+                                         stats.get("collected_count", stats.get("collectedCount", 0))))))),
+                comments=self._safe_int(stats.get("comment_count", stats.get("commentCount",
+                                        item.get("comment_count", item.get("commentCount", 0))))),
+                shares=self._safe_int(stats.get("share_count", stats.get("shareCount",
+                                       item.get("share_count", item.get("shareCount", 0))))),
+            )
+            notes.append(note)
+
+        return notes
+
+    def _parse_note_analyze_list(
+        self, data: dict, account: AccountInfo
+    ) -> list[NoteMetrics]:
+        """解析 datacenter/note/analyze/list 响应（单篇笔记互动数据）。
+
+        已知响应结构 (2026-07-13):
+        {
+          "data": {
+            "total": 1,
+            "note_infos": [
+              {
+                "id": "xxx",
+                "title": "xxx",
+                "type": 1,           // 1=图文, 2=视频
+                "post_time": 1769746170000,
+                "read_count": 57,     // 浏览量
+                "like_count": 2,
+                "fav_count": 1,       // 收藏
+                "comment_count": 4,
+                "share_count": 0,
+                "imp_count": 240      // 曝光量
+              }
+            ]
+          }
+        }
+        """
+        notes: list[NoteMetrics] = []
+
+        inner = data.get("data", data)
+
+        # 笔记数组: note_infos > notes > note_list > list
+        note_list = (
+            inner.get("note_infos")
+            or inner.get("notes")
+            or inner.get("note_list")
+            or inner.get("list")
+            or []
+        )
+
+        if not note_list and isinstance(inner, dict):
+            for key, val in inner.items():
+                if isinstance(val, list) and len(val) > 0:
+                    if isinstance(val[0], dict) and any(
+                        k in val[0] for k in ("id", "note_id", "title", "read_count", "like_count")
+                    ):
+                        note_list = val
+                        logger.debug("note_analyze: 从字段 '%s' 发现笔记列表", key)
+                        break
+
+        if not note_list:
+            logger.debug("note_analyze: 未识别到笔记列表结构, keys=%s",
+                         list(inner.keys())[:8] if isinstance(inner, dict) else type(inner))
+            return []
+
+        for item in note_list:
+            if not isinstance(item, dict):
+                continue
+
+            # note_id: 创作者中心用 "id" 而非 "note_id"
+            note_id = str(
+                item.get("id", item.get("note_id", item.get("noteId", "")))
+            )
+            if not note_id:
+                continue
+
+            # 互动数据: 创作者中心字段在 item 顶层
+            note = NoteMetrics(
+                note_id=note_id,
+                account_id=account.account_id,
+                title=item.get("title", item.get("display_title", item.get("displayTitle", ""))),
+                note_type=self._safe_note_type(item),
+                publish_date=self._parse_timestamp(
+                    item.get("post_time", item.get("publish_time", item.get("time",
+                    item.get("create_time", item.get("createTime", 0)))))
+                ),
+                url=item.get("url", item.get("note_url",
+                    f"{XHS_NOTE_DETAIL_URL}{note_id}")),
+                views=self._safe_int(item.get("read_count", item.get("view_count",
+                                     item.get("viewCount", 0)))),
+                likes=self._safe_int(item.get("like_count", item.get("likeCount",
+                                     item.get("liked_count", item.get("likedCount", 0))))),
+                favorites=self._safe_int(item.get("fav_count", item.get("collect_count",
+                                         item.get("collectCount", item.get("collected_count",
+                                         item.get("collectedCount", 0)))))),
+                comments=self._safe_int(item.get("comment_count", item.get("commentCount",
+                                        item.get("comment_count", item.get("commentCount", 0))))),
+                shares=self._safe_int(item.get("share_count", item.get("shareCount",
+                                       item.get("share_count", item.get("shareCount", 0))))),
+            )
+            notes.append(note)
+
+        return notes
+
+    @staticmethod
+    def _dump_debug_response(name: str, data: dict):
+        """将未知结构的 API 响应 dump 到文件，供人工分析。
+
+        文件路径: data/debug/{name}.json
+        仅在 debug 日志级别启用时写入，不覆盖已有文件（保留首次抓取的结构）。
+        """
+        import os
+        debug_dir = Path("data/debug")
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        filepath = debug_dir / f"{name}.json"
+        # 不覆盖已有文件，确保保留首次抓取的完整结构
+        if filepath.exists():
+            return
+        try:
+            filepath.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+            logger.info("✓ 调试数据已保存: %s (%d keys)", filepath, len(data) if isinstance(data, dict) else 0)
+        except Exception as e:
+            logger.debug("保存调试数据失败 %s: %s", name, e)
 
     def _extract_profile_from_api(
         self, account: AccountInfo
@@ -758,6 +1121,14 @@ class XHSBrowserCollector(BaseCollector):
     # ── 辅助方法 ──
 
     @staticmethod
+    def _safe_note_type(item: dict) -> str:
+        """安全解析笔记类型：兼容整数 (1=图文, 2=视频) 和字符串。"""
+        raw = item.get("type", item.get("note_type", item.get("noteType", "image")))
+        if isinstance(raw, int) or (isinstance(raw, str) and raw.isdigit()):
+            return "video" if int(raw) == 2 else "image"
+        return str(raw).lower() if raw else "image"
+
+    @staticmethod
     def _safe_int(value, default: int = 0) -> int:
         """安全转换整数。"""
         if isinstance(value, (int, float)):
@@ -861,25 +1232,67 @@ class HybridCollector(BaseCollector):
     async def collect_notes_data(
         self, account: AccountInfo, target_date: Optional[date] = None
     ) -> list[NoteMetrics]:
-        """按优先级降级采集笔记。"""
-        last_error = None
-        for collector in self.fallback_chain:
-            try:
-                logger.info(
-                    "尝试用 %s 采集笔记: %s",
-                    collector.name, account.display_name,
-                )
-                notes = await collector.collect_notes_data(account, target_date)
-                if notes:
-                    return notes
-            except Exception as e:
-                last_error = e
-                logger.warning("%s 采集失败: %s", collector.name, e)
-                continue
+        """采集笔记：浏览器优先 + CSV 补充去重。
 
-        raise CollectorError(
-            f"所有采集器均未获取到笔记: {account.display_name}"
-        ) from last_error
+        策略:
+        1. 优先使用浏览器/API 采集器（含实时互动数据）
+        2. CSV 作为补充，仅导入浏览器未覆盖的笔记
+        3. 按 note_id 去重，浏览器数据优先
+        """
+        all_notes: list[NoteMetrics] = []
+        seen_ids: set[str] = set()
+        csv_collector = None
+
+        # 区分 CSV 和其他采集器
+        from src.collectors.csv_import import CSVImportCollector
+        primary_collectors = [
+            c for c in self.fallback_chain
+            if not isinstance(c, CSVImportCollector)
+        ]
+        csv_collectors = [
+            c for c in self.fallback_chain
+            if isinstance(c, CSVImportCollector)
+        ]
+        if csv_collectors:
+            csv_collector = csv_collectors[0]
+
+        # 第一阶段: 浏览器/API 采集
+        for collector in primary_collectors:
+            try:
+                logger.info("尝试用 %s 采集笔记: %s", collector.name, account.display_name)
+                notes = await collector.collect_notes_data(account, target_date)
+                for n in notes:
+                    if n.note_id and n.note_id not in seen_ids:
+                        all_notes.append(n)
+                        seen_ids.add(n.note_id)
+                if notes:
+                    logger.info("%s 采集到 %d 篇笔记", collector.name, len(notes))
+            except Exception as e:
+                logger.warning("%s 采集失败: %s", collector.name, e)
+
+        # 第二阶段: CSV 补充浏览器未覆盖的笔记
+        if csv_collector and len(all_notes) < 200:
+            try:
+                logger.info("CSV 补充采集: %s", account.display_name)
+                csv_notes = await csv_collector.collect_notes_data(account, target_date)
+                added = 0
+                for n in csv_notes:
+                    if n.note_id and n.note_id not in seen_ids:
+                        all_notes.append(n)
+                        seen_ids.add(n.note_id)
+                        added += 1
+                if added:
+                    logger.info("CSV 补充 %d 篇笔记（浏览器未覆盖）", added)
+            except Exception as e:
+                logger.warning("CSV 补充采集失败: %s", e)
+
+        if not all_notes:
+            raise CollectorError(
+                f"所有采集器均未获取到笔记: {account.display_name}"
+            )
+
+        logger.info("笔记合并完成: %d 篇（%d 去重）", len(all_notes), len(seen_ids))
+        return all_notes
 
     async def validate_connection(self) -> bool:
         """只要有一种方式连接成功即可。"""

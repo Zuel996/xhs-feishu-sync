@@ -68,7 +68,7 @@ tables:
           - name: "视频"
             color: 3
       - name: "笔记链接"
-        type: 15       # URL
+        type: 1        # Text（避免飞书URL字段校验过严）
       - name: "浏览量"
         type: 2
       - name: "点赞数"

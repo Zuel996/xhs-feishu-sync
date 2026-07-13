@@ -216,7 +216,7 @@ class SyncEngine:
             }
 
             if note_info.url:
-                fields["笔记链接"] = note_info.url
+                fields["笔记链接"] = {"link": note_info.url, "text": note_info.title or "查看笔记"}
 
             if note_trends:
                 fields["浏览量日增量"] = note_trends.views.dod_delta
