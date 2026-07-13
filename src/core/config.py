@@ -146,6 +146,11 @@ class AccountInfo(BaseModel):
     xhs_username: str
     display_name: str
     competitor: bool = False
+    # 手动配置的账号基线数据（Excel 导出不含此数据时的fallback）
+    follower_count: int = 0
+    following_count: int = 0
+    total_likes: int = 0
+    total_collections: int = 0
 
 
 class AccountsConfig(BaseModel):

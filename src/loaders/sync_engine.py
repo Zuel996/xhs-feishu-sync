@@ -199,7 +199,6 @@ class SyncEngine:
                 "笔记标题": note_info.title,
                 "发布日期": _to_timestamp(note_info.publish_date),
                 "笔记类型": "图文" if note_info.note_type == "image" else "视频",
-                "笔记链接": note_info.url,
                 "浏览量": note_snapshot.views,
                 "点赞数": note_snapshot.likes,
                 "收藏数": note_snapshot.favorites,
@@ -212,6 +211,9 @@ class SyncEngine:
                 ),
                 "数据抓取日期": _to_timestamp(note_snapshot.snapshot_date),
             }
+
+            if note_info.url:
+                fields["笔记链接"] = note_info.url
 
             if note_trends:
                 fields["浏览量日增量"] = note_trends.views.dod_delta

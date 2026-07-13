@@ -44,6 +44,11 @@ class NoteMetrics(BaseModel):
     favorites: int = Field(default=0, ge=0, description="收藏数")
     comments: int = Field(default=0, ge=0, description="评论数")
     shares: int = Field(default=0, ge=0, description="分享数")
+    impressions: int = Field(default=0, ge=0, description="曝光数")
+    ctr: float = Field(default=0.0, ge=0, description="封面点击率")
+    new_followers: int = Field(default=0, ge=0, description="涨粉数")
+    avg_watch_time: float = Field(default=0.0, ge=0, description="人均观看时长(秒)")
+    danmaku: int = Field(default=0, ge=0, description="弹幕数")
     collected_at: datetime = Field(default_factory=datetime.now)
 
     @property
