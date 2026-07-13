@@ -2,13 +2,14 @@
 # 分为自有账号和竞品账号两类
 
 own_accounts:
-  # - account_id: "main_brand"
-  #   xhs_user_id: "5f3a2b1c0000000001001234"
-  #   xhs_username: "品牌官方号"
-  #   display_name: "主品牌官方号"
-  #   competitor: false
+  - account_id: "test_brand"
+    xhs_user_id: "test_user_001"
+    xhs_username: "测试品牌号"
+    display_name: "测试品牌"
+    competitor: false
 
-competitor_accounts:
+competitor_accounts: []
+  # 示例:
   # - account_id: "competitor_a"
   #   xhs_user_id: "5f3a2b1c0000000001005678"
   #   xhs_username: "竞品A"

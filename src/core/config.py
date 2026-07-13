@@ -113,10 +113,9 @@ class FeishuConfig(BaseModel):
     @field_validator("app_id", "app_secret", "bitable_app_token")
     @classmethod
     def not_empty(cls, v: str, info: Any) -> str:
+        # 允许离线模式（空值不阻止配置加载，BitableClient/SyncEngine 层面处理）
         if not v or v.startswith("${"):
-            raise MissingCredentialError(
-                f"飞书凭证未设置: {info.field_name}。请在 .env 文件中配置。"
-            )
+            return ""
         return v
 
 
@@ -154,6 +153,12 @@ class AccountsConfig(BaseModel):
 
     own_accounts: list[AccountInfo] = Field(default_factory=list)
     competitor_accounts: list[AccountInfo] = Field(default_factory=list)
+
+    @field_validator("own_accounts", "competitor_accounts", mode="before")
+    @classmethod
+    def default_to_empty(cls, v):
+        """YAML 空列表可能被解析为 None，转为 []"""
+        return v if v is not None else []
 
     @property
     def all_accounts(self) -> list[AccountInfo]:

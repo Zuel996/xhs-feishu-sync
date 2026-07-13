@@ -3,7 +3,7 @@
 
 # 数据采集策略: "browser" | "api" | "hybrid" | "csv"
 collection:
-  strategy: "browser"
+  strategy: "csv"
   fallback_strategy: "csv"
 
   # 浏览器采集配置
