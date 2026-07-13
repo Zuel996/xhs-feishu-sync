@@ -166,7 +166,7 @@ def test_collect(account: str | None):
 
 
 @cli.command()
-@click.option("--date", "-d", default=None, help="指定同步日期 (YYYY-MM-DD)")
+@click.option("--date", "-d", default=None, help="仅同步指定日期的笔记 (YYYY-MM-DD)，不传则导入全部")
 def run(date: str | None):
     """执行一次完整的数据采集→转换→同步流程。"""
     import asyncio

@@ -48,7 +48,8 @@ class PipelineRunner:
     """
 
     def __init__(self, target_date: Optional[date] = None):
-        self.target_date = target_date or date.today()
+        self.target_date = target_date  # None = 导入全部笔记，不过滤日期
+        self.snapshot_date = target_date or date.today()  # 快照日期必须有值
         self.config = load_config()
         self.db = get_db()
         self.collector = create_collector()
@@ -93,7 +94,7 @@ class PipelineRunner:
 
             # Step 2: 标准化并存入 SQLite
             account_snapshot, note_infos, note_snapshots = normalize_collect_result(
-                collect_result, self.target_date
+                collect_result, self.snapshot_date
             )
 
             if not account_snapshot:
@@ -118,10 +119,10 @@ class PipelineRunner:
 
                 # Step 3: 计算趋势
                 prev_snapshot = account_repo.get_previous(
-                    account.account_id, self.target_date, offset_days=1
+                    account.account_id, self.snapshot_date, offset_days=1
                 )
                 week_ago_snapshot = account_repo.get_previous(
-                    account.account_id, self.target_date, offset_days=7
+                    account.account_id, self.snapshot_date, offset_days=7
                 )
                 history = account_repo.get_history(account.account_id, days=30)
 
@@ -133,10 +134,10 @@ class PipelineRunner:
                 note_trends_map: dict[str, NoteTrends] = {}
                 for snap in note_snapshots:
                     prev_note = note_repo.get_previous(
-                        snap.note_id, self.target_date, offset_days=1
+                        snap.note_id, self.snapshot_date, offset_days=1
                     )
                     week_note = note_repo.get_previous(
-                        snap.note_id, self.target_date, offset_days=7
+                        snap.note_id, self.snapshot_date, offset_days=7
                     )
                     note_trends_map[snap.note_id] = self.trend_calc.calculate_note_trends(
                         snap, prev_note, week_note
@@ -156,7 +157,7 @@ class PipelineRunner:
                 sync_repo.update(
                     account.account_id,
                     status="success",
-                    snapshot_date=self.target_date,
+                    snapshot_date=self.snapshot_date,
                 )
 
                 session.commit()
@@ -184,7 +185,7 @@ class PipelineRunner:
                     sync_repo.update(
                         account.account_id,
                         status="failed",
-                        snapshot_date=self.target_date,
+                        snapshot_date=self.snapshot_date,
                         error_message=str(e)[:500],
                     )
                     session.commit()
@@ -268,10 +269,10 @@ class PipelineRunner:
             notes_by_account: dict[str, list[NoteSnapshot]] = {}
 
             for acc in competitors:
-                snap = account_repo.get_by_account_date(acc.account_id, self.target_date)
+                snap = account_repo.get_by_account_date(acc.account_id, self.snapshot_date)
                 if snap:
                     current_snapshots.append(snap)
-                notes = note_repo.get_all_for_date(self.target_date)
+                notes = note_repo.get_all_for_date(self.snapshot_date)
                 notes_by_account[acc.account_id] = [
                     n for n in notes if n.account_id == acc.account_id
                 ]
@@ -281,8 +282,8 @@ class PipelineRunner:
                 return
 
             # 昨日排名
-            yesterday = date.today() if self.target_date > date.today() else (
-                self.target_date
+            yesterday = date.today() if self.snapshot_date > date.today() else (
+                self.snapshot_date
             )
             # 这里简化处理，获取之前排名
             comparison = self.competitor_analyzer.build_comparison(
