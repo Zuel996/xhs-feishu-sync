@@ -93,19 +93,24 @@ class PipelineRunner:
                     logger.warning(w)
 
             # Step 2: 标准化并存入 SQLite
-            account_snapshot, note_infos, note_snapshots = normalize_collect_result(
+            # 按笔记发布日期分组，可能生成多条快照（每日期一条）
+            account_snapshots, note_infos, note_snapshots = normalize_collect_result(
                 collect_result, self.snapshot_date
             )
 
-            if not account_snapshot:
+            if not account_snapshots:
                 result["status"] = "skipped"
                 result["errors"].append("未采集到账号数据")
                 return result
 
+            # 取最新日期的快照用于趋势计算和账号概览同步
+            primary_snapshot = max(account_snapshots, key=lambda s: s.snapshot_date)
+
             with self.db.session() as session:
-                # 存账号快照
+                # 存所有账号快照（每日期一条）
                 account_repo = AccountSnapshotRepo(session)
-                account_repo.save(account_snapshot)
+                for snap in account_snapshots:
+                    account_repo.save(snap)
 
                 # 存笔记信息
                 note_info_repo = NoteInfoRepo(session)
@@ -117,7 +122,7 @@ class PipelineRunner:
                 for snap in note_snapshots:
                     note_repo.save(snap)
 
-                # Step 3: 计算趋势
+                # Step 3: 计算趋势（基于最新快照）
                 prev_snapshot = account_repo.get_previous(
                     account.account_id, self.snapshot_date, offset_days=1
                 )
@@ -127,7 +132,7 @@ class PipelineRunner:
                 history = account_repo.get_history(account.account_id, days=30)
 
                 trends = self.trend_calc.calculate_account_trends(
-                    account_snapshot, prev_snapshot, week_ago_snapshot, history
+                    primary_snapshot, prev_snapshot, week_ago_snapshot, history
                 )
 
                 # 笔记趋势
@@ -144,13 +149,17 @@ class PipelineRunner:
                     )
 
                 # Step 4: 同步到飞书
+                # 账号概览 + 笔记明细
                 sync_results = self.sync_engine.sync_full_pipeline(
-                    account_snapshot=account_snapshot,
+                    account_snapshot=primary_snapshot,
                     note_infos=note_infos,
                     note_snapshots=note_snapshots,
                     trends=trends,
                     note_trends_map=note_trends_map,
                 )
+                # 每日快照：每个日期各同步一条
+                for snap in account_snapshots:
+                    self.sync_engine.sync_daily_snapshot(snap)
 
                 # Step 5: 更新同步状态
                 sync_repo = SyncStateRepo(session)

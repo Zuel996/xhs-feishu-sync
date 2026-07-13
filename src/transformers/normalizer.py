@@ -152,6 +152,7 @@ def profile_to_snapshot(
 ) -> AccountSnapshot:
     """将 AccountProfile 转为 AccountSnapshot ORM 对象。"""
     return AccountSnapshot(
+        platform="xiaohongshu",
         account_id=profile.account_id,
         snapshot_date=snapshot_date or date.today(),
         follower_count=profile.follower_count,
@@ -167,12 +168,14 @@ def profile_to_snapshot(
 def note_metrics_to_info(note: NoteMetrics) -> NoteInfo:
     """从 NoteMetrics 提取不变信息到 NoteInfo。"""
     return NoteInfo(
+        platform="xiaohongshu",
         note_id=note.note_id,
         account_id=note.account_id,
         title=note.title,
         note_type=note.note_type,
         publish_date=note.publish_date,
         url=note.url,
+        sort_order=note.sort_order,
     )
 
 
@@ -181,6 +184,7 @@ def note_metrics_to_snapshot(
 ) -> NoteSnapshot:
     """将 NoteMetrics 转为 NoteSnapshot ORM 对象。"""
     return NoteSnapshot(
+        platform="xiaohongshu",
         note_id=note.note_id,
         account_id=note.account_id,
         snapshot_date=snapshot_date or date.today(),
@@ -194,17 +198,16 @@ def note_metrics_to_snapshot(
 
 def normalize_collect_result(
     result: CollectResult, snapshot_date: Optional[date] = None
-) -> tuple[Optional[AccountSnapshot], list[NoteInfo], list[NoteSnapshot]]:
+) -> tuple[list[AccountSnapshot], list[NoteInfo], list[NoteSnapshot]]:
     """将一个采集结果标准化为数据库模型。
 
+    当 snapshot_date 为 None 时，按笔记实际发布日期分组，
+    为每个有笔记的日期创建独立快照，确保每日快照数据准确。
+
     Returns:
-        (account_snapshot, note_info_list, note_snapshot_list)
+        (account_snapshot_list, note_info_list, note_snapshot_list)
     """
     sd = snapshot_date or date.today()
-
-    account_snapshot = None
-    if result.profile:
-        account_snapshot = profile_to_snapshot(result.profile, sd)
 
     note_infos: list[NoteInfo] = []
     note_snapshots: list[NoteSnapshot] = []
@@ -221,14 +224,32 @@ def normalize_collect_result(
         note_infos.append(note_metrics_to_info(note))
         note_snapshots.append(note_metrics_to_snapshot(note, sd))
 
-    # 补充当日汇总数据
-    if account_snapshot:
-        account_snapshot.notes_published_today = len(note_infos)
-        account_snapshot.total_interactions_today = sum(
-            ns.total_interactions for ns in note_snapshots
-        )
-        account_snapshot.total_views_today = sum(
-            ns.views for ns in note_snapshots
+    # 按笔记发布日期分组，为每个日期创建独立快照
+    account_snapshots: list[AccountSnapshot] = []
+    if result.profile:
+        notes_by_date: dict[date, list] = {}
+        for note in result.notes:
+            if not note.note_id or len(note.note_id) < 5:
+                continue
+            nd = note.publish_date or sd
+            if nd not in notes_by_date:
+                notes_by_date[nd] = []
+            notes_by_date[nd].append(note)
+
+        for nd, date_notes in notes_by_date.items():
+            snap = profile_to_snapshot(result.profile, nd)
+            snap.notes_published_today = len(date_notes)
+            snap.total_interactions_today = sum(
+                n.total_interactions for n in date_notes
+            )
+            snap.total_views_today = sum(
+                n.views for n in date_notes
+            )
+            account_snapshots.append(snap)
+
+        logger.info(
+            "生成 %d 条每日快照 (%d 个日期)",
+            len(account_snapshots), len(notes_by_date),
         )
 
-    return account_snapshot, note_infos, note_snapshots
+    return account_snapshots, note_infos, note_snapshots

@@ -1,14 +1,16 @@
-"""小红书浏览器采集器（Playwright CDP 模式）。
+"""小红书浏览器采集器（Chrome CDP 直连模式）。
 
 核心策略:
-1. 连接已运行的真实 Chrome (CDP 模式) — 绕过 Playwright 特征检测
-2. 拦截 XHR/API 响应获取 JSON 数据 — 比 HTML 解析更稳定
+1. 连接已运行的真实 Chrome (CDP 协议) — 绕过反爬检测
+2. 拦截 Network 响应获取 API JSON 数据 — 比 HTML 解析更稳定
 3. 降级方案: 解析 window.__INITIAL_STATE__ 嵌入数据
 
 使用前准备:
 1. 在本地 Chrome 登录小红书
 2. 启动 Chrome 时添加: --remote-debugging-port=9222
-3. 确保 .browser_state/storage.json 保存了登录态
+3. 确保 Chrome 已登录 xiaohongshu.com
+
+技术栈: websockets + httpx（纯 Python，无 C 扩展依赖，兼容 Python 3.14+）。
 
 注意事项:
 - 每日请求量控制在 100 次/账号以内
@@ -24,7 +26,10 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urljoin
+
+import httpx
+import websockets
+from websockets.asyncio.client import ClientConnection
 
 from src.collectors.base import BaseCollector
 from src.collectors.models import AccountProfile, NoteMetrics
@@ -45,34 +50,43 @@ logger = logging.getLogger(__name__)
 XHS_BASE_URL = "https://www.xiaohongshu.com"
 XHS_USER_PROFILE_URL = f"{XHS_BASE_URL}/user/profile/"
 XHS_NOTE_DETAIL_URL = f"{XHS_BASE_URL}/explore/"
-XHS_SEARCH_URL = f"{XHS_BASE_URL}/search_result/"
 
-# API 响应匹配模式
-XHS_API_PATTERNS = [
-    "**/api/sns/web/v1/user/otherinfo**",     # 用户信息
-    "**/api/sns/web/v1/note/feed**",           # 笔记列表
-    "**/api/sns/web/v1/feed**",                 # 笔记详情
-    "**/api/sns/web/v2/note/page**",           # 笔记分页
+# CDP API 响应匹配模式（过滤 Network 事件）
+XHS_API_URL_PATTERNS = [
+    # 创作者中心 - 账号数据
+    "/api/galaxy/creator/home/personal_info",
+    # 创作者中心 - 笔记数据
+    "/api/galaxy/creator/data/note",
+    # 创作者中心 - 数据中心
+    "/api/galaxy/v2/creator/datacenter",
+    # 个人主页 - 用户信息
+    "/api/sns/web/v1/user/otherinfo",
+    "/api/sns/web/v2/user/me",
+    # 个人主页 - 笔记列表
+    "/api/sns/web/v1/note/feed",
+    "/api/sns/web/v1/feed",
+    "/api/sns/web/v2/note/page",
 ]
+
+# 创作者中心 URL
+XHS_CREATOR_URL = "https://creator.xiaohongshu.com"
 
 
 class XHSBrowserCollector(BaseCollector):
-    """基于 Playwright CDP 的小红书数据采集器。
+    """基于 Chrome CDP 的小红书数据采集器。
 
     Args:
-        cdp_endpoint: Chrome DevTools Protocol 端点
-        headless: 是否无头模式（推荐 False 以降低检测）
+        cdp_endpoint: Chrome DevTools Protocol 端点 (HTTP)
         min_delay: 最小操作间隔（秒）
         max_delay: 最大操作间隔（秒）
         timeout: 请求超时（秒）
         max_notes: 单次最大采集笔记数
-        storage_state_path: 浏览器登录态持久化路径
     """
 
     def __init__(
         self,
         cdp_endpoint: str = "http://localhost:9222",
-        headless: bool = False,
+        headless: bool = False,  # 保留兼容，CDP 模式下忽略
         min_delay: float = 1.5,
         max_delay: float = 5.0,
         timeout: int = 30,
@@ -80,42 +94,120 @@ class XHSBrowserCollector(BaseCollector):
         storage_state_path: str = ".browser_state/storage.json",
     ):
         super().__init__()
-        self.cdp_endpoint = cdp_endpoint
-        self.headless = headless
+        self.cdp_endpoint = cdp_endpoint.rstrip("/")
         self.min_delay = min_delay
         self.max_delay = max_delay
         self.timeout = timeout
         self.max_notes = max_notes
-        self.storage_state_path = Path(storage_state_path)
 
         # 运行时状态
-        self._browser = None
-        self._context = None
-        self._page = None
+        self._ws: Optional[ClientConnection] = None
+        self._msg_id: int = 0
+        self._pending: dict[int, asyncio.Future] = {}
         self._api_responses: list[dict] = []
-        self._is_logged_in = False
+        self._pending_api_requests: dict[str, str] = {}  # requestId → url
+        self._is_logged_in: bool = False
+        self._http: Optional[httpx.AsyncClient] = None
+        self._listen_task: Optional[asyncio.Task] = None
 
-    # ── 浏览器生命周期 ──
+    # ── CDP 底层通信 ──
+
+    async def _send_cdp(self, method: str, params: dict | None = None) -> dict:
+        """发送 CDP 命令并等待响应。"""
+        self._msg_id += 1
+        msg_id = self._msg_id
+        msg = {"id": msg_id, "method": method, "params": params or {}}
+
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending[msg_id] = future
+
+        try:
+            await self._ws.send(json.dumps(msg))
+            result = await asyncio.wait_for(future, timeout=self.timeout)
+            if "error" in result:
+                raise CollectorError(
+                    f"CDP 命令失败 {method}: {result['error'].get('message', 'unknown')}"
+                )
+            return result.get("result", {})
+        except asyncio.TimeoutError:
+            raise CollectorError(f"CDP 命令超时: {method}")
+        finally:
+            self._pending.pop(msg_id, None)
+
+    async def _listen_cdp(self):
+        """持续监听 CDP WebSocket 消息，分发响应和事件。"""
+        try:
+            async for raw in self._ws:
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+
+                msg_id = msg.get("id")
+                if msg_id is not None and msg_id in self._pending:
+                    # 命令响应
+                    self._pending[msg_id].set_result(msg)
+                elif "method" in msg:
+                    # CDP 事件
+                    await self._handle_cdp_event(msg["method"], msg.get("params", {}))
+        except websockets.ConnectionClosed:
+            logger.debug("CDP WebSocket 连接已关闭")
+        except Exception as e:
+            logger.debug("CDP 监听异常: %s", e)
+
+    async def _handle_cdp_event(self, method: str, params: dict):
+        """处理 CDP 事件——仅收集 requestId，不在此处获取 body（避免死锁）。"""
+        if method == "Network.responseReceived":
+            response = params.get("response", {})
+            url = response.get("url", "")
+            # 临时：记录所有 API 调用到 debug 日志
+            # 调试用：如需排查 API 拦截问题，取消下面注释
+            # logger.debug("CDP Network: [%s] %s", response.get("status", 0), url[:150])
+            if any(pattern in url for pattern in XHS_API_URL_PATTERNS):
+                rid = params["requestId"]
+                self._pending_api_requests[rid] = url
+                logger.info("✓ 拦截到目标 API: %s", url[:120])
+
+    async def _fetch_pending_api_bodies(self):
+        """获取已拦截的 API 响应体（在导航完成后调用）。"""
+        fetched = 0
+        for rid, url in list(self._pending_api_requests.items()):
+            if fetched >= 20:  # 限制单次获取数量
+                break
+            try:
+                body_result = await self._send_cdp(
+                    "Network.getResponseBody",
+                    {"requestId": rid},
+                )
+                body = body_result.get("body", "")
+                if body:
+                    try:
+                        data = json.loads(body)
+                        self._api_responses.append({
+                            "url": url,
+                            "status": 200,
+                            "data": data,
+                            "timestamp": datetime.now(),
+                        })
+                        fetched += 1
+                    except json.JSONDecodeError:
+                        pass
+            except Exception:
+                pass  # 某些响应体可能已被清除
+            finally:
+                self._pending_api_requests.pop(rid, None)
 
     async def _ensure_browser(self):
-        """确保浏览器连接可用。"""
-        if self._browser and self._page:
+        """确保 CDP 浏览器连接可用。"""
+        if self._ws and self._listen_task:
             return
 
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError:
-            raise CollectorError(
-                "playwright 库未安装。请运行: pip install playwright && playwright install chromium"
-            )
-
-        self._playwright = await async_playwright().start()
+        self._http = httpx.AsyncClient(timeout=httpx.Timeout(self.timeout))
 
         try:
-            self._browser = await self._playwright.chromium.connect_over_cdp(
-                self.cdp_endpoint
-            )
-            logger.info("已连接到 Chrome CDP: %s", self.cdp_endpoint)
+            # 获取可用的页面列表
+            resp = await self._http.get(f"{self.cdp_endpoint}/json")
+            pages = resp.json()
         except Exception as e:
             raise BrowserConnectionError(
                 f"无法连接到 Chrome CDP ({self.cdp_endpoint})。\n"
@@ -123,56 +215,105 @@ class XHSBrowserCollector(BaseCollector):
                 f"错误: {e}"
             ) from e
 
-        # 创建上下文
-        contexts = self._browser.contexts
-        if contexts:
-            self._context = contexts[0]
-            logger.info("复用现有浏览器上下文")
-        else:
-            self._context = await self._browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                locale="zh-CN",
-            )
+        # 过滤出小红书页面
+        target_page = None
+        for page in pages:
+            if "xiaohongshu.com" in page.get("url", ""):
+                target_page = page
+                break
 
-        # 加载登录态
-        if self.storage_state_path.exists():
-            try:
-                await self._context.storage_state(path=str(self.storage_state_path))
-                logger.info("已加载浏览器登录态: %s", self.storage_state_path)
-            except Exception as e:
-                logger.warning("加载登录态失败: %s", e)
+        if not target_page:
+            # 取第一个普通页面
+            for page in pages:
+                if page.get("type") == "page":
+                    target_page = page
+                    break
 
-        pages = self._context.pages
-        if pages:
-            self._page = pages[0]
-        else:
-            self._page = await self._context.new_page()
+        if not target_page:
+            raise BrowserConnectionError("未找到可用的浏览器页面，请在 Chrome 中打开一个页面后重试")
 
-        # 设置 API 响应拦截
-        await self._setup_api_interception()
+        ws_url = target_page.get("webSocketDebuggerUrl")
+        if not ws_url:
+            raise BrowserConnectionError("无法获取页面 WebSocket 调试 URL")
 
-    async def _setup_api_interception(self):
-        """拦截小红书 API 响应，获取结构化 JSON 数据。"""
-        for pattern in XHS_API_PATTERNS:
-            await self._page.route(
-                pattern,
-                lambda route, response: self._handle_api_response(route, response),
-            )
-
-    async def _handle_api_response(self, route, response):
-        """处理拦截到的 API 响应。"""
         try:
-            body = await response.text()
-            data = json.loads(body)
-            self._api_responses.append({
-                "url": response.url,
-                "status": response.status,
-                "data": data,
-                "timestamp": datetime.now(),
-            })
-        except (json.JSONDecodeError, Exception):
-            pass
-        await route.continue_()
+            self._ws = await websockets.connect(
+                ws_url,
+                max_size=10 * 1024 * 1024,  # 10MB，支持大响应
+            )
+            logger.info("已连接到 Chrome CDP: %s", target_page.get("url", "unknown"))
+        except Exception as e:
+            raise BrowserConnectionError(f"CDP WebSocket 连接失败: {e}") from e
+
+        # ★ 必须先启动监听器，再发送 CDP 命令
+        self._listen_task = asyncio.create_task(self._listen_cdp())
+
+        # 启动 Network 监听（拦截 API 响应）
+        await self._send_cdp("Network.enable")
+        # 启动 Page 域（导航控制）
+        await self._send_cdp("Page.enable")
+        # 启动 Runtime 域（JS 执行）
+        await self._send_cdp("Runtime.enable")
+
+        logger.info("CDP 连接就绪，Network/Runtime/Page 域已启用")
+
+    async def _navigate(self, url: str, wait_dom: bool = True) -> int:
+        """导航到指定 URL，返回 HTTP 状态码。"""
+        await self._ensure_browser()
+
+        # 清空之前的 API 响应和待拉取请求
+        self._api_responses.clear()
+        self._pending_api_requests.clear()
+
+        result = await self._send_cdp("Page.navigate", {"url": url})
+        error_text = result.get("errorText", "")
+
+        if error_text:
+            logger.warning("页面导航错误: %s", error_text)
+
+        # 等待页面加载完成
+        if wait_dom:
+            await self._wait_for_load()
+
+        # 等待额外时间让 JS 渲染和 API 调用发出
+        await self._random_delay(1, 2)
+
+        # 拉取拦截到的 API 响应体
+        await self._fetch_pending_api_bodies()
+
+        return 200  # CDP 不直接返回 HTTP 状态码
+
+    async def _wait_for_load(self, timeout_ms: int = 15000):
+        """等待页面加载完成。"""
+        try:
+            future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+            async def _wait():
+                while True:
+                    await asyncio.sleep(0.3)
+                    try:
+                        result = await self._send_cdp(
+                            "Runtime.evaluate",
+                            {"expression": "document.readyState", "returnByValue": True},
+                        )
+                        state = result.get("result", {}).get("value", "")
+                        if state == "complete":
+                            future.set_result(True)
+                            return
+                    except Exception:
+                        pass
+
+            await asyncio.wait_for(_wait(), timeout=timeout_ms / 1000)
+        except asyncio.TimeoutError:
+            logger.debug("页面加载等待超时")
+
+    async def _evaluate(self, expression: str) -> dict:
+        """执行 JavaScript 表达式并返回结果。"""
+        await self._ensure_browser()
+        return await self._send_cdp(
+            "Runtime.evaluate",
+            {"expression": expression, "returnByValue": True},
+        )
 
     async def _random_delay(self, min_s: Optional[float] = None, max_s: Optional[float] = None):
         """操作间随机延迟，模拟人类行为。"""
@@ -182,39 +323,25 @@ class XHSBrowserCollector(BaseCollector):
         )
         await asyncio.sleep(delay)
 
-    async def _save_storage_state(self):
-        """保存浏览器登录态。"""
-        if self._context:
-            try:
-                self.storage_state_path.parent.mkdir(parents=True, exist_ok=True)
-                await self._context.storage_state(
-                    path=str(self.storage_state_path)
-                )
-                logger.debug("已保存登录态到: %s", self.storage_state_path)
-            except Exception as e:
-                logger.warning("保存登录态失败: %s", e)
-
     # ── 登录检测 ──
 
     async def _check_login_state(self) -> bool:
         """检测当前是否已登录小红书。"""
         await self._ensure_browser()
+
         try:
-            await self._page.goto(
-                f"{XHS_BASE_URL}/explore",
-                wait_until="domcontentloaded",
-                timeout=self.timeout * 1000,
-            )
+            await self._navigate(f"{XHS_BASE_URL}/explore")
             await self._random_delay(2, 4)
 
-            # 检查页面中是否存在登录按钮或用户信息
-            is_logged_in = await self._page.evaluate("""() => {
-                const loginBtn = document.querySelector('.login-btn, [class*="login"]');
-                const userAvatar = document.querySelector('.user .avatar, [class*="avatar"]');
-                return !loginBtn && !!userAvatar;
-            }""")
+            result = await self._evaluate("""(() => {
+                const hasLoginBtn = document.querySelector('.login-btn, [class*="login"]');
+                const hasAvatar = document.querySelector('.user .avatar, [class*="avatar"]');
+                return !hasLoginBtn && !!hasAvatar;
+            })()""")
 
+            is_logged_in = result.get("result", {}).get("value", False)
             self._is_logged_in = is_logged_in
+
             if not is_logged_in:
                 raise LoginSessionExpiredError(
                     "小红书登录态已过期。请在 Chrome 中重新登录小红书后重试。"
@@ -242,64 +369,87 @@ class XHSBrowserCollector(BaseCollector):
     async def collect_account_profile(
         self, account: AccountInfo
     ) -> AccountProfile:
-        """采集账号概览数据。"""
-        await self._check_login_state()
+        """采集账号概览数据（粉丝数、关注数、获赞收藏等）。
+
+        优先从创作者中心 API 获取，降级到个人主页 __INITIAL_STATE__。
+        """
         self._api_responses.clear()
 
-        profile_url = f"{XHS_USER_PROFILE_URL}{account.xhs_user_id}"
-        logger.info("访问账号主页: %s (%s)", account.display_name, profile_url)
-
         try:
-            response = await self._page.goto(
-                profile_url,
-                wait_until="domcontentloaded",
-                timeout=self.timeout * 1000,
-            )
-            if response and response.status == 404:
-                raise AccountNotFoundError(
-                    f"账号不存在: {account.xhs_user_id} ({account.display_name})"
-                )
-            if response and response.status == 429:
-                raise RateLimitError("请求频率过高，请稍后重试")
+            # 方案1: 创作者中心（官方数据 API，最可靠）
+            profile = await self._collect_profile_from_creator(account)
+            if profile and profile.follower_count > 0:
+                return profile
 
-            await self._random_delay(3, 6)
-
-            # 等待关键元素加载
-            try:
-                await self._page.wait_for_selector(
-                    '[class*="user"], [class*="profile"]',
-                    timeout=15_000,
-                )
-            except Exception:
-                logger.warning("页面加载超时，尝试从 API 响应获取数据")
-
-            # 检查验证码
-            await self._detect_captcha()
-
-            # 1. 优先从拦截的 API 响应中提取数据
-            profile = self._extract_profile_from_api(account)
-
-            # 2. 降级: 从 __INITIAL_STATE__ 提取
-            if not profile or profile.follower_count == 0:
-                logger.info("API 响应未获取到数据，尝试从页面状态获取")
-                profile = await self._extract_profile_from_page(account)
-
-            # 3. 即使数据为空也返回基础信息
-            if not profile:
-                profile = AccountProfile(
-                    account_id=account.account_id,
-                    xhs_user_id=account.xhs_user_id,
-                    username=account.xhs_username,
-                    display_name=account.display_name,
-                    competitor=account.competitor,
-                )
-
-            return profile
-
+            # 方案2: 个人主页 __INITIAL_STATE__
+            logger.info("创作者中心未获取到数据，尝试个人主页...")
+            profile = await self._collect_profile_from_profile_page(account)
+            if profile:
+                return profile
         except (AccountNotFoundError, RateLimitError, CaptchaDetectedError):
             raise
         except Exception as e:
-            raise CollectorError(f"采集账号概览失败: {e}") from e
+            logger.warning("采集账号概览异常: %s", e)
+
+        # 兜底：返回基础信息
+        return AccountProfile(
+            account_id=account.account_id,
+            xhs_user_id=account.xhs_user_id,
+            username=account.xhs_username,
+            display_name=account.display_name,
+            competitor=account.competitor,
+        )
+
+    async def _collect_profile_from_creator(
+        self, account: AccountInfo
+    ) -> Optional[AccountProfile]:
+        """从创作者中心获取账号数据。"""
+        await self._check_login_state()
+        self._api_responses.clear()
+
+        logger.info("访问创作者中心: %s", account.display_name)
+        await self._navigate(XHS_CREATOR_URL)
+        await self._random_delay(5, 8)  # 等待 API 调用触发
+        await self._detect_captcha()
+
+        # 再次拉取任何新到达的 API 响应
+        await self._fetch_pending_api_bodies()
+
+        logger.info("共拦截 %d 个 API 响应，%d 个待拉取",
+                     len(self._api_responses), len(self._pending_api_requests))
+
+        return self._extract_profile_from_creator_api(account)
+
+    async def _collect_profile_from_profile_page(
+        self, account: AccountInfo
+    ) -> Optional[AccountProfile]:
+        """从个人主页获取账号数据（降级方案）。"""
+        profile_url = f"{XHS_USER_PROFILE_URL}{account.xhs_user_id}"
+        logger.info("访问账号主页: %s (%s)", account.display_name, profile_url)
+
+        await self._navigate(profile_url)
+        await self._random_delay(3, 6)
+        await self._detect_captcha()
+
+        # 等待 API 响应
+        await self._random_delay(1, 2)
+        profile = self._extract_profile_from_api(account)
+
+        if not profile or profile.follower_count == 0:
+            profile = await self._extract_profile_from_page(account)
+
+        return profile
+
+    async def _wait_for_user_page_content(self):
+        """等待账号主页的用户信息区域出现。"""
+        for _ in range(10):
+            result = await self._evaluate("""(() => {
+                const el = document.querySelector('[class*="user"], [class*="profile"]');
+                return !!el;
+            })()""")
+            if result.get("result", {}).get("value", False):
+                return
+            await asyncio.sleep(1)
 
     async def collect_notes_data(
         self, account: AccountInfo, target_date: Optional[date] = None
@@ -316,7 +466,16 @@ class XHSBrowserCollector(BaseCollector):
         )
 
         try:
-            # 1. 优先从 API 响应中获取笔记数据
+            # 导航到账号主页（如果还没在）
+            profile_url = f"{XHS_USER_PROFILE_URL}{account.xhs_user_id}"
+            await self._navigate(profile_url)
+            await self._random_delay(3, 6)
+
+            # 等待 API 响应和页面渲染
+            await asyncio.sleep(2)
+            await self._detect_captcha()
+
+            # 1. 从 API 响应获取笔记
             notes = self._extract_notes_from_api(account)
 
             # 2. 降级: 从 __INITIAL_STATE__ 获取
@@ -324,14 +483,22 @@ class XHSBrowserCollector(BaseCollector):
                 logger.info("API 响应未获取到笔记，尝试从页面获取")
                 notes = await self._extract_notes_from_page(account)
 
-            # 3. 如果数据不足，逐篇访问详情页获取
+            # 3. 如果数据不足，滚动加载更多
             if len(notes) < min(10, self.max_notes):
-                logger.info("笔记数据不足，补充采集详情页...")
-                api_note_ids = {n.note_id for n in notes}
-                detail_notes = await self._collect_notes_from_profile_page(
-                    account, api_note_ids
-                )
-                notes.extend(detail_notes)
+                logger.info("笔记数据不足（%d篇），尝试滚动加载...", len(notes))
+                await self._scroll_page(times=5)
+                await self._random_delay(2, 4)
+
+                # 重新尝试获取
+                more_notes = self._extract_notes_from_api(account)
+                if not more_notes:
+                    more_notes = await self._extract_notes_from_page(account)
+
+                existing_ids = {n.note_id for n in notes}
+                for n in more_notes:
+                    if n.note_id and n.note_id not in existing_ids:
+                        notes.append(n)
+                        existing_ids.add(n.note_id)
 
             # 按目标日期过滤
             if target_date:
@@ -340,7 +507,6 @@ class XHSBrowserCollector(BaseCollector):
                     if n.publish_date and n.publish_date == target_date
                 ]
 
-            # 限制数量
             notes = notes[:self.max_notes]
             logger.info(
                 "笔记采集完成: %s — %d 篇",
@@ -351,12 +517,51 @@ class XHSBrowserCollector(BaseCollector):
         except Exception as e:
             raise CollectorError(f"采集笔记数据失败: {e}") from e
 
+    async def _scroll_page(self, times: int = 3):
+        """滚动页面加载更多内容。"""
+        for i in range(times):
+            await self._evaluate(
+                "window.scrollBy(0, window.innerHeight * 0.8)"
+            )
+            await self._random_delay(1, 2)
+
     # ── 数据提取 (API 响应) ──
+
+    def _extract_profile_from_creator_api(
+        self, account: AccountInfo
+    ) -> Optional[AccountProfile]:
+        """从创作者中心 personal_info API 提取账号数据。"""
+        for resp in self._api_responses:
+            url = resp.get("url", "")
+            if "personal_info" not in url:
+                continue
+
+            data = resp.get("data", {})
+            result = data.get("data", data)
+
+            if result.get("red_num") or result.get("name"):
+                logger.info(
+                    "从创作者中心获取账号数据: fans=%s, follow=%s, faved=%s",
+                    result.get("fans_count"), result.get("follow_count"), result.get("faved_count"),
+                )
+                return AccountProfile(
+                    account_id=account.account_id,
+                    xhs_user_id=account.xhs_user_id,
+                    username=result.get("name", account.xhs_username),
+                    display_name=account.display_name,
+                    follower_count=self._safe_int(result.get("fans_count", 0)),
+                    following_count=self._safe_int(result.get("follow_count", 0)),
+                    total_likes=self._safe_int(result.get("faved_count", 0)),
+                    total_collections=0,  # 创作者中心 merged into faved_count
+                    competitor=account.competitor,
+                )
+
+        return None
 
     def _extract_profile_from_api(
         self, account: AccountInfo
     ) -> Optional[AccountProfile]:
-        """从拦截的 API 响应中提取账号概览数据。"""
+        """从个人主页 API 响应中提取账号概览数据（降级方案）。"""
         for resp in self._api_responses:
             data = resp.get("data", {})
             if not data.get("success", True):
@@ -364,13 +569,14 @@ class XHSBrowserCollector(BaseCollector):
 
             result = data.get("data", {})
 
-            # user/otherinfo 接口
-            if "user" in resp.get("url", ""):
+            # user/otherinfo 或 user/me 接口
+            if "/user/" in resp.get("url", ""):
                 user = result.get("user", result)
-                if user.get("userid") == account.xhs_user_id or not account.xhs_user_id:
+                uid = str(user.get("userid", user.get("user_id", "")))
+                if uid == account.xhs_user_id or not account.xhs_user_id:
                     return AccountProfile(
                         account_id=account.account_id,
-                        xhs_user_id=user.get("userid", account.xhs_user_id),
+                        xhs_user_id=uid or account.xhs_user_id,
                         username=user.get("nickname", account.xhs_username),
                         display_name=account.display_name,
                         follower_count=self._safe_int(user.get("fans", 0)),
@@ -387,23 +593,26 @@ class XHSBrowserCollector(BaseCollector):
     ) -> list[NoteMetrics]:
         """从拦截的 API 响应中提取笔记数据。"""
         notes: list[NoteMetrics] = []
+        seen_ids: set[str] = set()
+
         for resp in self._api_responses:
             data = resp.get("data", {})
             if not data.get("success", True):
                 continue
             result = data.get("data", {})
 
-            # scan or search notes
+            # 多种可能的响应结构
             items = result.get("notes", result.get("items", []))
             for item in items:
                 note_card = item.get("note_card", item)
-                note_id = note_card.get("note_id", item.get("id", ""))
-                if not note_id:
+                note_id = str(note_card.get("note_id", item.get("id", "")))
+                if not note_id or note_id in seen_ids:
                     continue
+                seen_ids.add(note_id)
 
                 interact = note_card.get("interact_info", {})
                 note = NoteMetrics(
-                    note_id=str(note_id),
+                    note_id=note_id,
                     account_id=account.account_id,
                     title=note_card.get("display_title", note_card.get("title", "")),
                     note_type=note_card.get("type", "image"),
@@ -417,17 +626,38 @@ class XHSBrowserCollector(BaseCollector):
                     comments=self._safe_int(interact.get("comment_count", 0)),
                     shares=self._safe_int(interact.get("share_count", 0)),
                 )
-                if note.note_id:
-                    notes.append(note)
+                notes.append(note)
 
-        return notes
+            if len(notes) >= self.max_notes:
+                break
 
-    # ── 数据提取 (页面 JS) ──
+        return notes[:self.max_notes]
+
+    # ── 数据提取 (页面 __INITIAL_STATE__) ──
+
+    async def _get_initial_state(self) -> Optional[dict]:
+        """获取页面的 window.__INITIAL_STATE__ 数据。"""
+        try:
+            result = await self._evaluate("""(() => {
+                try {
+                    const state = window.__INITIAL_STATE__;
+                    return JSON.stringify(state);
+                } catch(e) {
+                    return null;
+                }
+            })()""")
+            state_text = result.get("result", {}).get("value")
+            if state_text and state_text != "null":
+                fixed = re.sub(r':\s*""\s*([,}])', r': null\1', state_text)
+                return json.loads(fixed)
+        except Exception as e:
+            logger.debug("获取 __INITIAL_STATE__ 失败: %s", e)
+        return None
 
     async def _extract_profile_from_page(
         self, account: AccountInfo
     ) -> Optional[AccountProfile]:
-        """从 window.__INITIAL_STATE__ 提取账号概览。"""
+        """从 __INITIAL_STATE__ 提取账号概览。"""
         try:
             state = await self._get_initial_state()
             if not state:
@@ -453,191 +683,69 @@ class XHSBrowserCollector(BaseCollector):
     async def _extract_notes_from_page(
         self, account: AccountInfo
     ) -> list[NoteMetrics]:
-        """从 window.__INITIAL_STATE__ 提取笔记列表。"""
+        """从 __INITIAL_STATE__ 提取笔记列表（兼容新旧版数据结构）。"""
         try:
             state = await self._get_initial_state()
             if not state:
                 return []
 
-            notes_data = (
-                state.get("user", {})
-                .get("notes", {})
-                .get("notesList", [])
-            )
             notes: list[NoteMetrics] = []
-            for item in notes_data[:self.max_notes]:
-                note_id = str(item.get("noteId", item.get("id", "")))
+            user_data = state.get("user", {})
+
+            # 新版小红书: Vue 3 ref 结构 — notes._value 是数组
+            notes_ref = user_data.get("notes", {})
+            if isinstance(notes_ref, dict):
+                notes_list = notes_ref.get("_value", notes_ref.get("_rawValue", []))
+            else:
+                notes_list = []
+
+            # 旧版兼容: user.notes.notesList
+            if not notes_list:
+                notes_list = notes_ref.get("notesList", [])
+
+            for item in notes_list[:self.max_notes]:
+                # 新版：笔记数据在 noteCard 里
+                note_card = item.get("noteCard", item)
+                note_id = str(note_card.get("noteId", item.get("noteId", item.get("id", ""))))
                 if not note_id:
                     continue
 
+                interact = note_card.get("interactInfo", note_card.get("interact_info", {}))
                 note = NoteMetrics(
                     note_id=note_id,
                     account_id=account.account_id,
-                    title=item.get("displayTitle", item.get("title", "")),
-                    note_type=item.get("type", "image"),
+                    title=note_card.get("displayTitle", note_card.get("display_title", item.get("displayTitle", ""))),
+                    note_type=note_card.get("type", item.get("type", "image")),
                     publish_date=self._parse_timestamp(
-                        item.get("time", item.get("createTime", 0))
+                        note_card.get("time", note_card.get("createTime", item.get("time", item.get("createTime", 0))))
                     ),
                     url=f"{XHS_NOTE_DETAIL_URL}{note_id}",
-                    views=self._safe_int(item.get("viewCount", 0)),
-                    likes=self._safe_int(item.get("likedCount", 0)),
-                    favorites=self._safe_int(item.get("collectedCount", 0)),
-                    comments=self._safe_int(item.get("commentCount", 0)),
-                    shares=self._safe_int(item.get("shareCount", 0)),
+                    views=self._safe_int(interact.get("viewCount", interact.get("view_count", 0))),
+                    likes=self._safe_int(interact.get("likedCount", interact.get("liked_count", 0))),
+                    favorites=self._safe_int(interact.get("collectedCount", interact.get("collected_count", 0))),
+                    comments=self._safe_int(interact.get("commentCount", interact.get("comment_count", 0))),
+                    shares=self._safe_int(interact.get("shareCount", interact.get("share_count", 0))),
                 )
                 notes.append(note)
 
+            if notes:
+                logger.info("从 __INITIAL_STATE__ 提取 %d 篇笔记", len(notes))
             return notes
         except Exception as e:
             logger.debug("__INITIAL_STATE__ 笔记解析失败: %s", e)
             return []
 
-    async def _collect_notes_from_profile_page(
-        self, account: AccountInfo, exclude_ids: set[str]
-    ) -> list[NoteMetrics]:
-        """通过滚动账号主页的笔记列表，点击进入详情页采集数据。"""
-        notes: list[NoteMetrics] = []
-
-        try:
-            # 滚动加载笔记列表
-            for scroll_i in range(5):  # 最多滚动5屏
-                await self._page.evaluate(
-                    "window.scrollBy(0, window.innerHeight * 0.8)"
-                )
-                await self._random_delay(1, 3)
-
-            # 获取笔记链接
-            note_links = await self._page.evaluate("""() => {
-                const links = document.querySelectorAll(
-                    'a[href*="/explore/"], a[href*="/discovery/item/"]'
-                );
-                return [...new Set(
-                    Array.from(links).map(a => a.href).filter(h => h)
-                )].slice(0, 50);
-            }""")
-
-            collected = 0
-            for link in note_links:
-                if collected >= self.max_notes:
-                    break
-
-                note_id = self._extract_note_id_from_url(link)
-                if not note_id or note_id in exclude_ids:
-                    continue
-
-                try:
-                    await self._page.goto(
-                        link,
-                        wait_until="domcontentloaded",
-                        timeout=self.timeout * 1000,
-                    )
-                    await self._random_delay(1.5, 4)
-                    await self._detect_captcha()
-
-                    note = await self._extract_single_note(account, note_id, link)
-                    if note:
-                        notes.append(note)
-                        collected += 1
-                except Exception as e:
-                    logger.warning("笔记详情页采集失败 %s: %s", note_id, e)
-                    continue
-
-        except Exception as e:
-            logger.warning("从页面滚动采集笔记时出错: %s", e)
-
-        return notes
-
-    async def _extract_single_note(
-        self, account: AccountInfo, note_id: str, url: str
-    ) -> Optional[NoteMetrics]:
-        """从笔记详情页提取单篇笔记数据。"""
-        try:
-            # 优先从 API 响应获取
-            for resp in self._api_responses[-5:]:  # 最近5个响应
-                data = resp.get("data", {}).get("data", {})
-                note_data = data.get("note", data.get("items", [{}])[0] if data.get("items") else {})
-                raw_id = str(note_data.get("note_id", note_data.get("id", "")))
-                if raw_id == note_id:
-                    interact = note_data.get("interact_info", {})
-                    return NoteMetrics(
-                        note_id=note_id,
-                        account_id=account.account_id,
-                        title=note_data.get("display_title", note_data.get("title", "")),
-                        note_type=note_data.get("type", "image"),
-                        publish_date=self._parse_timestamp(
-                            note_data.get("time", note_data.get("create_time", 0))
-                        ),
-                        url=url,
-                        views=self._safe_int(interact.get("view_count", 0)),
-                        likes=self._safe_int(interact.get("liked_count", 0)),
-                        favorites=self._safe_int(interact.get("collected_count", 0)),
-                        comments=self._safe_int(interact.get("comment_count", 0)),
-                        shares=self._safe_int(interact.get("share_count", 0)),
-                    )
-
-            # 降级: 从页面 JS 提取
-            state = await self._get_initial_state()
-            if state:
-                note_detail = (
-                    state.get("note", {})
-                    .get("noteDetailMap", {})
-                    .get(note_id, {})
-                    .get("note", {})
-                )
-                if note_detail:
-                    interact = note_detail.get("interactInfo", {})
-                    return NoteMetrics(
-                        note_id=note_id,
-                        account_id=account.account_id,
-                        title=note_detail.get("displayTitle", note_detail.get("title", "")),
-                        note_type=note_detail.get("type", "image"),
-                        publish_date=self._parse_timestamp(
-                            note_detail.get("time", note_detail.get("createTime", 0))
-                        ),
-                        url=url,
-                        views=self._safe_int(interact.get("viewCount", 0)),
-                        likes=self._safe_int(interact.get("likedCount", 0)),
-                        favorites=self._safe_int(interact.get("collectedCount", 0)),
-                        comments=self._safe_int(interact.get("commentCount", 0)),
-                        shares=self._safe_int(interact.get("shareCount", 0)),
-                    )
-        except Exception as e:
-            logger.debug("提取笔记详情失败 %s: %s", note_id, e)
-
-        return None
-
-    # ── 辅助方法 ──
-
-    async def _get_initial_state(self) -> Optional[dict]:
-        """获取页面的 window.__INITIAL_STATE__ 数据。"""
-        try:
-            state_text = await self._page.evaluate("""() => {
-                try {
-                    const state = window.__INITIAL_STATE__;
-                    return JSON.stringify(state);
-                } catch(e) {
-                    return null;
-                }
-            }""")
-            if state_text and state_text != "null":
-                # 修复已知的小红书 __INITIAL_STATE__ bug:
-                # undefined 值被替换为 ""（空字符串）
-                fixed = re.sub(
-                    r':\s*""\s*([,}])', r': null\1', state_text
-                )
-                return json.loads(fixed)
-        except Exception as e:
-            logger.debug("获取 __INITIAL_STATE__ 失败: %s", e)
-        return None
+    # ── 验证码检测 ──
 
     async def _detect_captcha(self) -> None:
         """检测是否触发了验证码。"""
         try:
-            has_captcha = await self._page.evaluate("""() => {
+            result = await self._evaluate("""(() => {
                 const body = document.body.innerText || '';
-                const captchaKeywords = ['验证码', '滑块验证', '请完成验证', 'captcha', 'verify'];
-                return captchaKeywords.some(kw => body.includes(kw));
-            }""")
+                const keywords = ['验证码', '滑块验证', '请完成验证', 'captcha', 'verify'];
+                return keywords.some(kw => body.includes(kw));
+            })()""")
+            has_captcha = result.get("result", {}).get("value", False)
             if has_captcha:
                 raise CaptchaDetectedError(
                     "检测到验证码！请在 Chrome 浏览器中手动完成验证后重试。"
@@ -646,6 +754,8 @@ class XHSBrowserCollector(BaseCollector):
             raise
         except Exception:
             pass
+
+    # ── 辅助方法 ──
 
     @staticmethod
     def _safe_int(value, default: int = 0) -> int:
@@ -675,31 +785,33 @@ class XHSBrowserCollector(BaseCollector):
             pass
         return None
 
-    @staticmethod
-    def _extract_note_id_from_url(url: str) -> str:
-        """从笔记 URL 中提取笔记 ID。"""
-        patterns = [
-            r"/explore/([a-f0-9]{24})",
-            r"/discovery/item/([a-f0-9]{24})",
-            r"/note/([a-f0-9]{24})",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, url)
-            if match:
-                return match.group(1)
-        return ""
-
     # ── 资源清理 ──
 
     async def close(self):
-        """关闭浏览器连接。"""
-        await self._save_storage_state()
-        if hasattr(self, "_playwright") and self._playwright:
-            await self._playwright.stop()
-        self._browser = None
-        self._page = None
-        self._context = None
-        logger.info("浏览器连接已关闭")
+        """关闭 CDP 连接。"""
+        if self._listen_task and not self._listen_task.done():
+            self._listen_task.cancel()
+            try:
+                await self._listen_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._ws:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+
+        if self._http:
+            try:
+                await self._http.aclose()
+            except Exception:
+                pass
+            self._http = None
+
+        self._pending.clear()
+        logger.info("CDP 连接已关闭")
 
 
 class HybridCollector(BaseCollector):

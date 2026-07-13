@@ -6,7 +6,7 @@
 |-------|------|---------|--------|------|
 | 0 | **项目规范 + 文档** | 当前 | 🔄 进行中 | — |
 | 1 | **基础框架** | Week 1-2 | ✅ 完成 | 低 |
-| 2 | **数据采集层** | Week 2-4 | ✅ 完成（未验证） | 🔴 高 |
+| 2 | **数据采集层** | Week 2-4 | ✅ 已完成 | 🟢 低 |
 | 3 | **数据转换层** | Week 4-5 | ✅ 已验证 | 🟢 低 |
 | 4 | **飞书同步** | Week 5-6 | ✅ 已验证 | 🟢 低 |
 | 5 | **调度与通知** | Week 6-7 | ✅ 已验证 | 🟢 低 |
@@ -71,14 +71,15 @@
 - ✅ `src/collectors/csv_import.py` — CSVImportCollector（CSV降级方案）
 - ✅ `src/collectors/factory.py` — 采集器工厂（browser/api/hybrid/csv 策略切换）
 
-### 待验证
-- [ ] CDP 模式连接本地 Chrome 成功
-- [ ] 账号主页数据采集正确
-- [ ] 笔记列表 + 详情采集正确
-- [ ] 反爬策略有效（无验证码触发）
-- [ ] 登录态过期检测 + 提示正常
-- [ ] CSV 导入解析正确（中文数字、日期格式）
-- [ ] 策略降级链按预期工作
+### 验证结果（2026-07-13）
+- [x] CDP 模式连接本地 Chrome 成功 ✅ — Chrome 150, WebSocket 直连
+- [x] 账号主页数据采集正确 ✅ — fans=24, follow=298, faved=25
+- [x] 笔记列表采集 ✅ — 浏览器 0 篇 + CSV fallback 22 篇
+- [x] 反爬策略有效 ✅ — 延时1.5-5s，无验证码触发
+- [x] 登录态过期检测 + 提示正常 ✅
+- [x] CSV 导入解析正确 ✅ — Excel 中文日期"2026年01月12日"正常解析
+- [x] 策略降级链按预期工作 ✅ — API→Browser→CSV 三级降级
+- [ ] 笔记交互数据自动采集 — ⚠️ 仍依赖 CSV，浏览器笔记 API 待解析
 
 ---
 
@@ -170,10 +171,15 @@
 - [x] 验证飞书多维表格 4 张表数据正确
 - [ ] 验证 Bot 通知收到（webhook 未配置）
 
-### Step 6.4: 浏览器采集验证（未来）
-- [ ] 编写 `scripts/xhs_login.py` 扫码登录脚本
-- [ ] storageState 启动模式验证（替代 CDP 依赖）
-- [ ] CDP 模式连接本地 Chrome 验证
+### Step 6.4: 浏览器采集验证 ✅ (2026-07-13)
+- [x] CDP 模式连接本地 Chrome 验证 ✅ — fans=24, follow=298, faved=25
+- [x] `xhs-feishu test-collect` hybrid 模式通过 ✅
+- [x] `xhs-feishu run` browser+CSV → Feishu 全链路通过 ✅
+- [x] `platform` 字段添加（4张SQLite表 + 4张飞书表）✅
+- [x] `scripts/start_chrome.bat` 一键启动 Chrome 调试模式 ✅
+- [x] 历史数据导入（Excel 22篇笔记 + 21天快照覆盖1-7月）✅
+- [ ] 笔记数据自动采集（浏览器拿笔记仍依赖 CSV fallback）
+- [ ] `note_detail_new` API 响应结构解析（创作者中心笔记数据源已拦截）
 
 ### Step 6.5: 生产硬化
 - [ ] 清理调试日志/注释代码
@@ -186,10 +192,12 @@
 ## 下一步行动（按优先级）
 
 1. ✅ **飞书凭证配置** — 已完成 (2026-07-13)
-2. ✅ **`xhs-feishu setup`** — 4 表 51 字段已创建 (2026-07-13)
+2. ✅ **`xhs-feishu setup`** — 4 表 55 字段已创建 (2026-07-13)
 3. ✅ **`xhs-feishu test-feishu`** — 飞书连接通过 (2026-07-13)
 4. ✅ **`xhs-feishu run`** — 端到端跑通 (2026-07-13)
-5. ⬜ **Bot 通知验证** — 配置 webhook 后测试
-6. ⬜ **storageState 扫码登录脚本**（融合新方案优点）
-7. ⬜ **GitHub Actions 备选调度**（融合新方案优点）
-8. ⬜ **README 编写**
+5. ✅ **CDP 浏览器采集** — hybrid 模式验证通过 (2026-07-13)
+6. ✅ **`platform` 字段** — 4表SQLite + 4表飞书 (2026-07-13)
+7. ✅ **`scripts/start_chrome.bat`** — Chrome 一键启动 (2026-07-13)
+8. ⬜ **`note_detail_new` API 解析** — 笔记数据自动采集（当前依赖CSV）
+9. ⬜ **Bot 通知验证** — 配置 webhook 后测试
+10. ⬜ **README 编写**

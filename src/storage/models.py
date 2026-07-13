@@ -22,6 +22,7 @@ class AccountSnapshot(Base):
     __tablename__ = "account_snapshots"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    platform: Mapped[str] = mapped_column(String(32), default="xiaohongshu")
     account_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     snapshot_date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
     follower_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -52,11 +53,13 @@ class NoteInfo(Base):
     __tablename__ = "note_info"
 
     note_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    platform: Mapped[str] = mapped_column(String(32), default="xiaohongshu")
     account_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     title: Mapped[str] = mapped_column(String(256), default="")
     note_type: Mapped[str] = mapped_column(String(16), default="image")  # "image" | "video"
     publish_date: Mapped[date] = mapped_column(Date, index=True, nullable=True)
     url: Mapped[str] = mapped_column(String(512), default="")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
     def __repr__(self) -> str:
@@ -69,6 +72,7 @@ class NoteSnapshot(Base):
     __tablename__ = "note_snapshots"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    platform: Mapped[str] = mapped_column(String(32), default="xiaohongshu")
     note_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     account_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     snapshot_date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
@@ -103,6 +107,7 @@ class SyncState(Base):
     __tablename__ = "sync_state"
 
     account_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    platform: Mapped[str] = mapped_column(String(32), default="xiaohongshu")
     last_synced_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     last_snapshot_date: Mapped[date] = mapped_column(Date, nullable=True)
     sync_status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|success|failed

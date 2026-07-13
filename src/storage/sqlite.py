@@ -143,6 +143,7 @@ class NoteInfoRepo:
             existing.note_type = note_info.note_type
             existing.publish_date = note_info.publish_date
             existing.url = note_info.url
+            existing.sort_order = note_info.sort_order
             self.session.flush()
             return existing
         else:

@@ -6,6 +6,8 @@ tables:
   account_summary:
     name: "账号概览"
     fields:
+      - name: "平台"
+        type: 1        # Text
       - name: "账号名称"
         type: 1        # Text
       - name: "账号类型"
@@ -46,12 +48,16 @@ tables:
   note_metrics:
     name: "笔记数据明细"
     fields:
+      - name: "平台"
+        type: 1
       - name: "笔记ID"
         type: 1
       - name: "所属账号"
         type: 1
       - name: "笔记标题"
         type: 1
+      - name: "排序序号"
+        type: 2
       - name: "发布日期"
         type: 5
       - name: "笔记类型"
@@ -88,9 +94,13 @@ tables:
   daily_snapshot:
     name: "每日快照"
     fields:
+      - name: "平台"
+        type: 1
       - name: "快照日期"
         type: 5
       - name: "账号名称"
+        type: 1
+      - name: "快照键"
         type: 1
       - name: "粉丝数"
         type: 2
@@ -109,6 +119,8 @@ tables:
   competitor_comparison:
     name: "竞品对比"
     fields:
+      - name: "平台"
+        type: 1
       - name: "排名"
         type: 2
       - name: "账号名称"

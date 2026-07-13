@@ -49,6 +49,7 @@ class NoteMetrics(BaseModel):
     new_followers: int = Field(default=0, ge=0, description="涨粉数")
     avg_watch_time: float = Field(default=0.0, ge=0, description="人均观看时长(秒)")
     danmaku: int = Field(default=0, ge=0, description="弹幕数")
+    sort_order: int = Field(default=0, ge=0, description="排序序号(Excel行顺序)")
     collected_at: datetime = Field(default_factory=datetime.now)
 
     @property

@@ -152,6 +152,7 @@ class SyncEngine:
             raise SyncEngineError("找不到 account_summary 表")
 
         fields = {
+            "平台": "xiaohongshu",
             "账号名称": trends.account_id,
             "粉丝数": trends.follower.current_value,
             "关注数": trends.following.current_value,
@@ -194,9 +195,11 @@ class SyncEngine:
         records = []
         for note_info, note_snapshot, note_trends in notes:
             fields = {
+                "平台": "xiaohongshu",
                 "笔记ID": note_snapshot.note_id,
                 "所属账号": note_snapshot.account_id,
                 "笔记标题": note_info.title,
+                "排序序号": note_info.sort_order,
                 "发布日期": _to_timestamp(note_info.publish_date),
                 "笔记类型": "图文" if note_info.note_type == "image" else "视频",
                 "浏览量": note_snapshot.views,
@@ -234,7 +237,7 @@ class SyncEngine:
         return result.get("created", 0) + result.get("updated", 0)
 
     def sync_daily_snapshot(self, snapshot: AccountSnapshot) -> int:
-        """同步每日快照表（追加一行）。"""
+        """同步每日快照表（upsert：按 快照日期+账号名称 匹配，有则更新，无则创建）。"""
         if not self.enabled:
             return 0
         table_id = self.table_ids.get("daily_snapshot")
@@ -242,6 +245,7 @@ class SyncEngine:
             raise SyncEngineError("找不到 daily_snapshot 表")
 
         fields = {
+            "平台": "xiaohongshu",
             "快照日期": _to_timestamp(snapshot.snapshot_date),
             "账号名称": snapshot.account_id,
             "粉丝数": snapshot.follower_count,
@@ -252,15 +256,20 @@ class SyncEngine:
             "当日笔记总浏览": snapshot.total_views_today,
         }
 
+        # 使用复合唯一键 "快照键" 作为 upsert 匹配字段
+        match_key = f"{snapshot.account_id}@{snapshot.snapshot_date}"
+        fields["快照键"] = match_key
+
         records = [{"fields": fields}]
-        result = self.client.batch_create_records(table_id, records)
+        result = self.client.upsert_records(table_id, records, match_field="快照键")
         logger.info(
-            "每日快照同步: %s @ %s — %d 行",
+            "每日快照同步: %s @ %s (created=%d, updated=%d)",
             snapshot.account_id,
             snapshot.snapshot_date,
-            len(result),
+            result.get("created", 0),
+            result.get("updated", 0),
         )
-        return len(result)
+        return result.get("created", 0) + result.get("updated", 0)
 
     def sync_competitor_comparison(
         self, comparison: ComparisonTable
@@ -276,6 +285,7 @@ class SyncEngine:
         for rank in comparison.sorted_by_rank:
             records.append({
                 "fields": {
+                    "平台": "xiaohongshu",
                     "排名": rank.rank,
                     "账号名称": rank.display_name,
                     "粉丝数": rank.follower_count,
@@ -311,7 +321,11 @@ class SyncEngine:
         competitor_rank: Optional[int] = None,
         rank_change: str = "不变",
     ) -> dict[str, int]:
-        """执行完整同步（一张表）。"""
+        """执行完整同步：账号概览 + 笔记明细。
+
+        每日快照由调用方单独调用 sync_daily_snapshot() 控制，
+        以支持按日期分组的批量快照同步。
+        """
         if not self.enabled:
             logger.debug("SyncEngine 离线模式，跳过飞书同步")
             return {"account_summary": 0, "note_metrics": 0, "daily_snapshot": 0}
@@ -339,12 +353,6 @@ class SyncEngine:
         except Exception as e:
             logger.error("笔记明细同步失败: %s", e)
             results["note_metrics"] = 0
-
-        try:
-            results["daily_snapshot"] = self.sync_daily_snapshot(account_snapshot)
-        except Exception as e:
-            logger.error("每日快照同步失败: %s", e)
-            results["daily_snapshot"] = 0
 
         return results
 

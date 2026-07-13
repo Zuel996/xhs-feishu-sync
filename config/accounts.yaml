@@ -3,9 +3,9 @@
 
 own_accounts:
   - account_id: "test_brand"
-    xhs_user_id: "test_user_001"
+    xhs_user_id: "66765d460000000003033e11"
     xhs_username: "测试品牌号"
-    display_name: "测试品牌"
+    display_name: "LingoAce"
     competitor: false
     # 以下为手动配置的账号基线数据（Excel导出不含此数据时的fallback）
     # follower_count: 0

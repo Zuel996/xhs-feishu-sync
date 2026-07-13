@@ -199,9 +199,16 @@ class CSVImportCollector(BaseCollector):
         # note_id: 优先用 CSV 的笔记ID，否则用标题 MD5 生成
         note_id = self._get_val(mapping, row, "note_id")
         if not note_id:
-            note_id = hashlib.md5(
-                f"{account.account_id}_{title}".encode()
-            ).hexdigest()[:16]
+            if title:
+                id_source = f"{account.account_id}_{title}"
+            else:
+                # 无标题笔记：用发布日期+体裁+曝光+观看量组合生成唯一ID
+                pub_date = self._get_val(mapping, row, "publish_date")
+                note_type_val = self._get_val(mapping, row, "note_type")
+                impressions_val = self._get_val(mapping, row, "impressions")
+                views_val = self._get_val(mapping, row, "views")
+                id_source = f"{account.account_id}_{pub_date}_{note_type_val}_{impressions_val}_{views_val}"
+            note_id = hashlib.md5(id_source.encode()).hexdigest()[:16]
 
         # 处理浮点字段（CTR、人均观看时长）
         ctr_str = self._get_val(mapping, row, "ctr")
@@ -378,6 +385,7 @@ class CSVImportCollector(BaseCollector):
                             continue
                     if not note.note_id or len(note.note_id) < 5:
                         continue
+                    note.sort_order = len(notes) + 1
                     notes.append(note)
                 except Exception as e:
                     logger.warning(
@@ -440,10 +448,7 @@ class CSVImportCollector(BaseCollector):
                     if note.publish_date != target_date:
                         continue
 
-                # Excel 无笔记ID，用标题 MD5 生成，跳过无标题行
-                if not note.title:
-                    continue
-
+                note.sort_order = len(notes) + 1  # Excel行顺序
                 notes.append(note)
             except Exception as e:
                 logger.warning(
