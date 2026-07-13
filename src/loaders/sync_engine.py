@@ -12,6 +12,25 @@ import logging
 from datetime import date, datetime
 from typing import Optional
 
+
+def _to_timestamp(d: date | datetime | None) -> int:
+    """将日期/时间转为飞书 DateTime 字段所需的毫秒时间戳。"""
+    if d is None:
+        return 0
+    if isinstance(d, datetime):
+        return int(d.timestamp() * 1000)
+    if isinstance(d, date):
+        return int(datetime(d.year, d.month, d.day).timestamp() * 1000)
+    return 0
+
+
+def _to_timestamp_str(d: date | datetime | None) -> str:
+    """将日期/时间转为飞书 DateTime 字段所需的毫秒时间戳字符串。
+
+    因为部分飞书 API 场景下 DateTime 字段接受字符串形式的时间戳。
+    """
+    return str(_to_timestamp(d))
+
 from src.core.config import load_accounts, load_config
 from src.core.exceptions import SyncEngineError
 from src.core.exceptions import FeishuAuthError, XHSFeishuSyncError
@@ -140,7 +159,7 @@ class SyncEngine:
             "粉丝日增量": trends.follower.dod_delta,
             "粉丝周增量": trends.follower.wow_delta,
             "粉丝增长率(%)": trends.follower.dod_rate,
-            "数据更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "数据更新时间": _to_timestamp(datetime.now()),
             "异常标记": trends.has_anomaly,
         }
 
@@ -178,10 +197,7 @@ class SyncEngine:
                 "笔记ID": note_snapshot.note_id,
                 "所属账号": note_snapshot.account_id,
                 "笔记标题": note_info.title,
-                "发布日期": (
-                    note_info.publish_date.strftime("%Y-%m-%d")
-                    if note_info.publish_date else ""
-                ),
+                "发布日期": _to_timestamp(note_info.publish_date),
                 "笔记类型": "图文" if note_info.note_type == "image" else "视频",
                 "笔记链接": note_info.url,
                 "浏览量": note_snapshot.views,
@@ -194,7 +210,7 @@ class SyncEngine:
                     round(note_snapshot.total_interactions / note_snapshot.views * 100, 2)
                     if note_snapshot.views > 0 else 0.0
                 ),
-                "数据抓取日期": note_snapshot.snapshot_date.strftime("%Y-%m-%d"),
+                "数据抓取日期": _to_timestamp(note_snapshot.snapshot_date),
             }
 
             if note_trends:
@@ -224,7 +240,7 @@ class SyncEngine:
             raise SyncEngineError("找不到 daily_snapshot 表")
 
         fields = {
-            "快照日期": snapshot.snapshot_date.strftime("%Y-%m-%d"),
+            "快照日期": _to_timestamp(snapshot.snapshot_date),
             "账号名称": snapshot.account_id,
             "粉丝数": snapshot.follower_count,
             "关注数": snapshot.following_count,
@@ -267,7 +283,7 @@ class SyncEngine:
                     "互动率(%)": rank.engagement_rate,
                     "近7天发布笔记数": rank.recent_notes_count,
                     "平均笔记互动量": rank.avg_interactions_per_note,
-                    "对比日期": comparison.comparison_date.strftime("%Y-%m-%d"),
+                    "对比日期": _to_timestamp(comparison.comparison_date),
                 }
             })
 

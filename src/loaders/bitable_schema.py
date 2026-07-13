@@ -68,7 +68,7 @@ class BitableSchemaManager:
         return table_id
 
     def setup_all_tables(self) -> dict[str, str]:
-        """根据 schema 配置创建所有表。返回 {table_key: table_id}。"""
+        """根据 schema 配置创建所有表并添加字段。返回 {table_key: table_id}。"""
         schema = load_schema_config()
         table_ids: dict[str, str] = {}
         existing_tables = self.get_existing_tables()
@@ -82,6 +82,19 @@ class BitableSchemaManager:
                 table_id = self.ensure_table(name)
                 table_ids[table_key] = table_id
                 existing_tables[name] = table_id  # 更新缓存
+
+            # 为每张表添加字段
+            tid = table_ids[table_key]
+            for field_def in table_def.get("fields", []):
+                field_name = field_def["name"]
+                field_type = field_def["type"]
+                options = field_def.get("options", None)
+                try:
+                    result = self.client.add_field(tid, field_name, field_type, options)
+                    if result.get("created"):
+                        print(f"    ✓ 添加字段: {field_name}")
+                except Exception as e:
+                    print(f"    ⚠ 字段 {field_name} 添加失败: {e}")
 
         return table_ids
 

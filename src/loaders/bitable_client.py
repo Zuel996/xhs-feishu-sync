@@ -23,6 +23,11 @@ from lark_oapi.api.bitable.v1 import (
     ListAppTableRequest,
     AppTableRecord,
 )
+from lark_oapi.api.bitable.v1.model.req_table import ReqTable
+from lark_oapi.api.auth.v3 import (
+    InternalTenantAccessTokenRequest,
+    InternalTenantAccessTokenRequestBody,
+)
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -75,19 +80,34 @@ class BitableClient:
         )
 
         try:
-            resp = self._client.auth.tenant_access_token()
+            # lark-oapi v1.7+ API: internal tenant access token
+            body = (
+                InternalTenantAccessTokenRequestBody.builder()
+                .app_id(self.config.app_id)
+                .app_secret(self.config.app_secret)
+                .build()
+            )
+            req = (
+                InternalTenantAccessTokenRequest.builder()
+                .request_body(body)
+                .build()
+            )
+            resp = self._client.auth.v3.tenant_access_token.internal(req)
             if not resp.success():
                 raise FeishuAuthError(
                     f"获取飞书 tenant_access_token 失败: "
                     f"code={resp.code}, msg={resp.msg}"
                 )
-            self._token = resp.tenant_access_token or ""
+            # 解析 raw response 获取 token
+            import json
+            raw_data = json.loads(resp.raw.content) if resp.raw and resp.raw.content else {}
+            self._token = raw_data.get("tenant_access_token", "")
             # token 有效期 2 小时，提前 5 分钟刷新
             self._token_expires_at = datetime.now() + timedelta(hours=1, minutes=55)
             return self._token
+        except FeishuAuthError:
+            raise
         except Exception as e:
-            if isinstance(e, FeishuAuthError):
-                raise
             raise FeishuAuthError(f"飞书鉴权异常: {e}") from e
 
     @property
@@ -113,25 +133,128 @@ class BitableClient:
             for t in items
         ]
 
-    def create_table(self, name: str, default_view_name: str = "默认视图") -> str:
+    def create_table(self, name: str, default_view_name: str = "") -> str:
         """创建新数据表并返回 table_id。"""
         self.ensure_token()
-        body = CreateAppTableRequestBody.builder() \
-            .table(CreateAppTableRequestBody.builder()
-                   .name(name)
-                   .default_view_name(default_view_name)
-                   .build()) \
+        builder = ReqTable.builder().name(name)
+        if default_view_name:
+            builder.default_view_name(default_view_name)
+        table_req = builder.build()
+        body = (
+            CreateAppTableRequestBody.builder()
+            .table(table_req)
             .build()
-        req = CreateAppTableRequest.builder() \
-            .app_token(self.app_token) \
-            .request_body(body) \
+        )
+        req = (
+            CreateAppTableRequest.builder()
+            .app_token(self.app_token)
+            .request_body(body)
             .build()
+        )
         resp = self._client.bitable.v1.app_table.create(req)
         if not resp.success():
             raise FeishuApiError(
                 f"创建数据表失败: code={resp.code}, msg={resp.msg}"
             )
         return resp.data.table_id or ""
+
+    # ── 字段操作 ──
+
+    def add_field(
+        self,
+        table_id: str,
+        field_name: str,
+        field_type: int,
+        options: list[dict] | None = None,
+    ) -> dict:
+        """为数据表添加字段（幂等：字段已存在则跳过）。
+
+        Args:
+            table_id: 数据表ID
+            field_name: 字段名称
+            field_type: 飞书字段类型代码 (1=Text, 2=Number, 3=SingleSelect, ...)
+            options: 仅 SingleSelect/MultiSelect 需要，[{"name": "选项名", "color": 1}, ...]
+
+        Returns:
+            {"field_id": "...", "field_name": "...", "created": True/False}
+        """
+        self.ensure_token()
+        import requests as http_requests
+
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Content-Type": "application/json",
+        }
+        url = (
+            f"https://open.feishu.cn/open-apis/bitable/v1/apps"
+            f"/{self.app_token}/tables/{table_id}/fields"
+        )
+
+        # 检查字段是否已存在
+        existing = self._list_fields(table_id)
+        for f in existing:
+            if f["field_name"] == field_name:
+                return {
+                    "field_id": f["field_id"],
+                    "field_name": field_name,
+                    "created": False,
+                }
+
+        body: dict[str, Any] = {
+            "field_name": field_name,
+            "type": field_type,
+        }
+        if options:
+            body["property"] = {"options": options}
+
+        resp = http_requests.post(url, headers=headers, json=body)
+        data = resp.json()
+        if data.get("code") != 0:
+            raise FeishuApiError(
+                f"添加字段失败 [{field_name}]: code={data.get('code')}, msg={data.get('msg')}"
+            )
+
+        field_data = data.get("data", {}).get("field", {})
+        return {
+            "field_id": field_data.get("field_id", ""),
+            "field_name": field_data.get("field_name", field_name),
+            "created": True,
+        }
+
+    def _list_fields(self, table_id: str) -> list[dict]:
+        """列出数据表的所有字段。"""
+        import requests as http_requests
+
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+        }
+        url = (
+            f"https://open.feishu.cn/open-apis/bitable/v1/apps"
+            f"/{self.app_token}/tables/{table_id}/fields"
+        )
+        fields: list[dict] = []
+        page_token: str | None = None
+        while True:
+            params = {"page_size": 100}
+            if page_token:
+                params["page_token"] = page_token
+            resp = http_requests.get(url, headers=headers, params=params)
+            data = resp.json()
+            if data.get("code") != 0:
+                raise FeishuApiError(
+                    f"列出字段失败: code={data.get('code')}, msg={data.get('msg')}"
+                )
+            items = data.get("data", {}).get("items", [])
+            for item in items:
+                fields.append({
+                    "field_id": item.get("field_id", ""),
+                    "field_name": item.get("field_name", ""),
+                    "type": item.get("type", 0),
+                })
+            if not data.get("data", {}).get("has_more"):
+                break
+            page_token = data.get("data", {}).get("page_token")
+        return fields
 
     # ── 记录操作 ──
 
