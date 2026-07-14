@@ -1,5 +1,5 @@
 @echo off
-REM === XHS Data Sync — Chrome Debug Mode Launcher ===
+REM === XHS Data Sync - Chrome Debug Mode Launcher ===
 REM Close all Chrome windows before running this script.
 REM First use: log in to creator.xiaohongshu.com in the opened browser.
 
@@ -21,7 +21,7 @@ set CDP_PORT=9222
 set START_URL=https://creator.xiaohongshu.com
 
 echo ========================================
-echo   XHS Data Sync — Chrome Debug Mode
+echo   XHS Data Sync - Chrome Debug Mode
 echo ========================================
 echo.
 echo  Chrome:  %CHROME%

@@ -28,11 +28,37 @@ echo.
 echo   Deleting...
 echo.
 
-C:\Users\LingoAce\AppData\Local\Programs\Python\Python314\Scripts\xhs-feishu.exe clear --all --confirm
+REM -- Auto-detect Python --
+set PYTHON=python
+python --version >nul 2>&1
+if %ERRORLEVEL% EQU 0 goto :run
+
+REM Try common local install paths (Python 3.11-3.14)
+if exist "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" set "PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe" & goto :run
+if exist "%LOCALAPPDATA%\Programs\Python\Python313\python.exe" set "PYTHON=%LOCALAPPDATA%\Programs\Python\Python313\python.exe" & goto :run
+if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" set "PYTHON=%LOCALAPPDATA%\Programs\Python\Python312\python.exe" & goto :run
+if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" set "PYTHON=%LOCALAPPDATA%\Programs\Python\Python311\python.exe" & goto :run
+
+REM Try system-wide install
+if exist "C:\Program Files\Python314\python.exe" set "PYTHON=C:\Program Files\Python314\python.exe" & goto :run
+if exist "C:\Program Files\Python313\python.exe" set "PYTHON=C:\Program Files\Python313\python.exe" & goto :run
+if exist "C:\Program Files\Python312\python.exe" set "PYTHON=C:\Program Files\Python312\python.exe" & goto :run
+
+echo ============================================================
+echo   ERROR: Python 3.11+ not found.
+echo   Install from https://www.python.org/downloads/
+echo ============================================================
+pause
+exit /b 1
+
+:run
+%PYTHON% -m src.cli.main clear --all --confirm
 
 if %errorlevel% neq 0 (
     echo.
+    echo ============================================================
     echo   ERROR: Delete failed with code %errorlevel%
+    echo ============================================================
     pause
     exit /b %errorlevel%
 )

@@ -2,11 +2,13 @@
 
 命令列表:
     setup         一次性初始化（数据库 + 飞书多维表格）
+    doctor        全面诊断：检查环境/配置/飞书/Chrome/存储
     test-feishu   测试飞书连接
     test-collect  测试数据采集（干跑）
     run           执行一次完整的采集→同步
     start         启动定时调度器
     status        查看调度器状态
+    clear         清理飞书+本地数据
 """
 
 import sys
@@ -69,6 +71,232 @@ def setup():
         click.echo(f"  ⚠ 飞书初始化失败 (请检查 .env 配置): {e}")
 
     click.echo(f"\n✓ 初始化完成！")
+
+
+@cli.command()
+def doctor():
+    """全面诊断：检查 Python/配置/飞书/Chrome/存储，给出明确修复建议。"""
+    import os
+    import sys as _sys
+
+    from src.core.config import PROJECT_ROOT
+
+    click.echo("=" * 60)
+    click.echo("  xhs-feishu 系统诊断")
+    click.echo("=" * 60)
+
+    all_ok = True
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # ── 1. Python 环境 ──
+    click.echo("\n[1/5] Python 环境")
+    py_ver = f"{_sys.version_info.major}.{_sys.version_info.minor}.{_sys.version_info.micro}"
+    if _sys.version_info >= (3, 11):
+        click.echo(f"  ✓ Python {py_ver}")
+    else:
+        click.echo(f"  ✗ Python {py_ver}（需要 ≥ 3.11）")
+        errors.append("Python 版本过低，请升级到 3.11+")
+        all_ok = False
+
+    deps_ok = True
+    for dep in [
+        "playwright", "lark_oapi", "pydantic", "yaml", "sqlalchemy",
+        "apscheduler", "click", "httpx", "structlog", "dotenv",
+        "tenacity", "openpyxl",
+    ]:
+        try:
+            __import__(dep)
+        except ImportError:
+            click.echo(f"  ✗ 缺少依赖: {dep}")
+            deps_ok = False
+    if deps_ok:
+        click.echo("  ✓ 所有依赖已安装")
+    else:
+        errors.append("缺少依赖，请运行: pip install -e .")
+        all_ok = False
+
+    # ── 2. 配置文件 ──
+    click.echo("\n[2/5] 配置文件")
+    env_file = PROJECT_ROOT / ".env"
+    if env_file.exists():
+        click.echo("  ✓ .env 文件存在")
+        for var in ["FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_BITABLE_APP_TOKEN"]:
+            val = os.getenv(var, "")
+            if val:
+                masked = val[:4] + "****" if len(val) > 4 else "****"
+                click.echo(f"    ✓ {var} = {masked}")
+            else:
+                click.echo(f"    ✗ {var} 未设置")
+                errors.append(f".env 中缺少 {var}")
+                all_ok = False
+        if os.getenv("FEISHU_BOT_WEBHOOK_URL"):
+            click.echo("    ✓ FEISHU_BOT_WEBHOOK_URL（日报推送已配置）")
+        else:
+            click.echo("    ⚠ FEISHU_BOT_WEBHOOK_URL 未配置（日报推送不可用）")
+            warnings.append("Bot Webhook 未配置，日报推送功能不可用")
+    else:
+        click.echo("  ✗ .env 文件不存在")
+        if (PROJECT_ROOT / ".env.example").exists():
+            click.echo("    → 执行: copy .env.example .env 并填写凭证")
+        errors.append(".env 文件不存在")
+        all_ok = False
+
+    for name in ["settings.yaml", "accounts.yaml"]:
+        if (PROJECT_ROOT / "config" / name).exists():
+            click.echo(f"  ✓ config/{name} 存在")
+        else:
+            click.echo(f"  ⚠ config/{name} 不存在（{'飞书模式可忽略' if name == 'accounts.yaml' else '必需'}）")
+
+    # ── 3. 飞书连接 ──
+    click.echo("\n[3/5] 飞书连接")
+    config = None
+    try:
+        from src.core.config import load_config
+        config = load_config()
+    except Exception as e:
+        click.echo(f"  ✗ 配置加载失败: {e}")
+        errors.append(f"配置加载失败: {e}")
+        all_ok = False
+
+    if config:
+        try:
+            from src.loaders.bitable_client import BitableClient
+            client = BitableClient(config.feishu)
+            token = client.ensure_token()
+            click.echo(f"  ✓ Token 获取成功")
+
+            tables = client.list_tables()
+            click.echo(f"  ✓ 多维表格访问成功（{len(tables)} 张表）")
+            table_names = {t["name"] for t in tables}
+            for rt in ["账号管理", "账号概览", "笔记数据明细", "每日快照", "竞品对比"]:
+                if rt in table_names:
+                    click.echo(f"    ✓ {rt}")
+                else:
+                    click.echo(f"    ✗ 缺少表: {rt} → 运行 xhs-feishu setup")
+                    errors.append(f"飞书缺少表: {rt}")
+                    all_ok = False
+
+            # 检查账号管理表中的启用账号
+            try:
+                from src.loaders.account_manager import FeishuAccountManager
+                mgr = FeishuAccountManager(client)
+                if mgr.enabled:
+                    accts = mgr.load_accounts()
+                    if accts:
+                        own = [a for a in accts if not a.competitor]
+                        comp = [a for a in accts if a.competitor]
+                        click.echo(f"  ✓ 启用账号: {len(accts)} 个（{len(own)} 自有 + {len(comp)} 竞品）")
+                    else:
+                        click.echo("  ⚠ 飞书「账号管理」表中无启用账号")
+                        click.echo("    → 在飞书表格中填写账号ID/XHS用户ID，并勾选「启用」")
+                        warnings.append("飞书账号管理表中无启用账号（或未勾选启用）")
+                else:
+                    click.echo("  ⚠ 未找到「账号管理」表 → 运行 xhs-feishu setup")
+            except Exception as e:
+                click.echo(f"  ⚠ 账号管理检查失败: {e}")
+        except Exception as e:
+            click.echo(f"  ✗ 飞书连接失败: {e}")
+            errors.append(f"飞书连接失败: {e}")
+            all_ok = False
+
+    # ── 4. Chrome CDP ──
+    click.echo("\n[4/5] Chrome CDP 浏览器采集")
+    chrome_paths = [
+        os.path.expandvars(p) for p in [
+            "%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe",
+            "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe",
+            "%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe",
+        ]
+    ] if _sys.platform == "win32" else [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium-browser",
+    ]
+
+    chrome_found = None
+    for cp in chrome_paths:
+        if Path(cp).exists():
+            chrome_found = cp
+            break
+
+    if chrome_found:
+        click.echo(f"  ✓ Chrome: {chrome_found}")
+    else:
+        click.echo("  ⚠ Chrome 未找到（CSV/API 模式不受影响）")
+        warnings.append("Chrome 未安装或未在标准位置，浏览器采集不可用")
+
+    try:
+        import httpx
+        resp = httpx.get("http://localhost:9222/json/version", timeout=5.0)
+        if resp.status_code == 200:
+            browser = resp.json().get("Browser", "Chrome")
+            click.echo(f"  ✓ CDP 端口 9222 响应正常（{browser}）")
+        else:
+            click.echo("  ⚠ CDP 端口 9222 未响应")
+            if chrome_found:
+                click.echo("    → 运行 scripts\\start_chrome.bat 启动 Chrome 调试模式")
+            warnings.append("Chrome CDP 端口 9222 未响应，浏览器采集不可用")
+    except Exception:
+        click.echo("  ⚠ CDP 端口 9222 无法连接")
+        if chrome_found:
+            click.echo("    → 运行 scripts\\start_chrome.bat 启动 Chrome 调试模式")
+        warnings.append("Chrome CDP 端口 9222 无法连接")
+
+    # ── 5. 本地存储 ──
+    click.echo("\n[5/5] 本地存储")
+    if config:
+        try:
+            from src.storage.models import AccountSnapshot, NoteInfo, NoteSnapshot, SyncState
+            from src.storage.sqlite import Database
+            db = Database(config.storage.sqlite_path)
+            db.init()
+            click.echo(f"  ✓ SQLite: {db.db_path}")
+            with db.session() as session:
+                for model, label in [
+                    (AccountSnapshot, "快照"), (NoteInfo, "笔记"),
+                    (NoteSnapshot, "笔记快照"), (SyncState, "同步状态")
+                ]:
+                    count = session.query(model).count()
+                    click.echo(f"    - {label}: {count} 条")
+        except Exception as e:
+            click.echo(f"  ✗ SQLite 访问失败: {e}")
+            errors.append(f"SQLite 访问失败: {e}")
+            all_ok = False
+
+    log_dir = PROJECT_ROOT / "logs"
+    try:
+        log_dir.mkdir(exist_ok=True)
+        test_file = log_dir / ".write_test"
+        test_file.touch()
+        test_file.unlink()
+        click.echo(f"  ✓ 日志目录可写: {log_dir}")
+    except Exception as e:
+        click.echo(f"  ✗ 日志目录不可写: {e}")
+        errors.append(f"日志目录不可写: {log_dir}")
+        all_ok = False
+
+    # ── 汇总 ──
+    click.echo(f"\n{'=' * 60}")
+    if all_ok:
+        click.echo("✅ 所有检查通过！系统状态正常。")
+    else:
+        click.echo("❌ 发现问题，请修复后重新运行 xhs-feishu doctor")
+
+    if errors:
+        click.echo(f"\n✗ 错误（{len(errors)} 项，必须修复）：")
+        for e in errors:
+            click.echo(f"  • {e}")
+    if warnings:
+        click.echo(f"\n⚠ 警告（{len(warnings)} 项，不影响核心功能）：")
+        for w in warnings:
+            click.echo(f"  • {w}")
+
+    if all_ok and not errors:
+        click.echo("\n可以开始使用了：")
+        click.echo("  1. scripts\\start_chrome.bat  启动 Chrome 调试模式")
+        click.echo("  2. 每日采集.bat              双击运行采集同步")
+    click.echo(f"{'=' * 60}")
 
 
 @cli.command()

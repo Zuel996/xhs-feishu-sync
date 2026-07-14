@@ -121,6 +121,7 @@ class XHSBrowserCollector(BaseCollector):
         self._api_responses: list[dict] = []
         self._pending_api_requests: dict[str, str] = {}  # requestId → url
         self._is_logged_in: bool = False
+        self._logged_in_user_id: Optional[str] = None  # 从页面提取的登录用户ID（hex）
         self._http: Optional[httpx.AsyncClient] = None
         self._listen_task: Optional[asyncio.Task] = None
         self._cached_creator_notes: list[NoteMetrics] = []
@@ -365,12 +366,63 @@ class XHSBrowserCollector(BaseCollector):
                     "小红书登录态已过期。请在 Chrome 中重新登录小红书后重试。"
                 )
             logger.info("✓ 小红书登录态正常")
+
+            # 提取登录用户 ID（用于后续身份校验）
+            if self._logged_in_user_id is None:
+                self._logged_in_user_id = await self._extract_logged_in_user_id()
+                if self._logged_in_user_id:
+                    logger.info("   Chrome 登录账号 ID: %s", self._logged_in_user_id)
+
             return True
         except LoginSessionExpiredError:
             raise
         except Exception as e:
             logger.warning("登录状态检测异常: %s", e)
             return False
+
+    async def _extract_logged_in_user_id(self) -> Optional[str]:
+        """从页面 __INITIAL_STATE__ 提取当前登录的小红书用户 ID（32位 hex）。
+
+        在 explore 或 creator 页面调用，提取后缓存供身份校验使用。
+        """
+        try:
+            result = await self._evaluate("""(() => {
+                const state = window.__INITIAL_STATE__;
+                if (!state) return '';
+                const user = state.user || state.profile || state.creator || {};
+                return String(user.userId || user.id || user.user_id || user.red_id || '');
+            })()""")
+            uid = result.get("result", {}).get("value", "")
+            uid = str(uid).strip() if uid else ""
+            return uid if uid and len(uid) >= 10 else None
+        except Exception as e:
+            logger.debug("提取登录用户 ID 失败: %s", e)
+            return None
+
+    async def _verify_account_identity(self, account: AccountInfo) -> Optional[str]:
+        """校验 Chrome 登录账号与配置账号是否一致。
+
+        Returns:
+            实际登录的 user_id（hex），无法提取则返回 None。
+        """
+        logged_in_id = self._logged_in_user_id
+        if not logged_in_id:
+            return None
+
+        configured_id = account.xhs_user_id.strip() if account.xhs_user_id else ""
+
+        if configured_id and logged_in_id != configured_id:
+            logger.warning(
+                "⚠️ 账号不匹配！Chrome 登录的是 %s，但配置采集的是 %s (%s)。"
+                "采集到的创作者中心数据属于 Chrome 登录账号，而非配置账号。"
+                "请在 Chrome 调试窗口中切换到账号 %s 后重试。",
+                logged_in_id, configured_id, account.display_name,
+                configured_id,
+            )
+        elif configured_id and logged_in_id == configured_id:
+            logger.info("✓ 身份校验通过: %s", account.display_name)
+
+        return logged_in_id
 
     # ── 公共方法 ──
 
@@ -397,6 +449,10 @@ class XHSBrowserCollector(BaseCollector):
             # 方案1: 创作者中心（官方数据 API，最可靠）
             profile = await self._collect_profile_from_creator(account)
             if profile and profile.follower_count > 0:
+                # 身份校验：Chrome 登录账号必须与配置账号一致
+                actual_user_id = await self._verify_account_identity(account)
+                if actual_user_id and actual_user_id != account.xhs_user_id:
+                    profile.actual_xhs_user_id = actual_user_id
                 return profile
 
             # 方案2: 个人主页 __INITIAL_STATE__

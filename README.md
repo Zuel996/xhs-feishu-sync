@@ -54,8 +54,14 @@
 
 ### 方式一：一键安装（推荐）
 
+**Windows：**
 ```batch
 scripts\setup.bat
+```
+
+**Mac / Linux：**
+```bash
+bash scripts/setup.sh
 ```
 
 自动完成：Python 检测 → 依赖安装 → 配置检查 → 数据库初始化。

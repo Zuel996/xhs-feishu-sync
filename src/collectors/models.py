@@ -14,7 +14,11 @@ class AccountProfile(BaseModel):
     """小红书账号概览数据（一次性采集）。"""
 
     account_id: str = Field(description="内部账号标识")
-    xhs_user_id: str = Field(description="小红书用户ID")
+    xhs_user_id: str = Field(description="小红书用户ID（配置值）")
+    actual_xhs_user_id: Optional[str] = Field(
+        default=None,
+        description="实际采集到的小红书用户ID（Chrome登录账号）。若与 xhs_user_id 不一致，说明身份不匹配"
+    )
     username: str = Field(description="小红书用户名")
     display_name: str = Field(default="", description="显示名称")
     follower_count: int = Field(default=0, ge=0, description="粉丝数")

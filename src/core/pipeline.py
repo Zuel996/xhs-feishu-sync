@@ -92,6 +92,15 @@ class PipelineRunner:
                 for w in profile_warnings:
                     logger.warning(w)
 
+                # 身份校验：Chrome 登录账号与配置账号不匹配时告警
+                actual_id = collect_result.profile.actual_xhs_user_id
+                if actual_id and actual_id != account.xhs_user_id:
+                    logger.warning(
+                        "⚠️ 账号身份不匹配！配置=%s, Chrome实际登录=%s。"
+                        "数据来自 Chrome 登录账号，非配置账号。请切换 Chrome 登录账号。",
+                        account.xhs_user_id, actual_id,
+                    )
+
             # Step 2: 标准化并存入 SQLite
             # 按笔记发布日期分组，可能生成多条快照（每日期一条）
             account_snapshots, note_infos, note_snapshots = normalize_collect_result(

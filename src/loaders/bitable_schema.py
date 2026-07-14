@@ -8,6 +8,7 @@
 
 from typing import Any
 
+import click
 import yaml
 
 from src.core.config import PROJECT_ROOT, load_config
@@ -64,7 +65,7 @@ class BitableSchemaManager:
         if name in existing:
             return existing[name]
         table_id = self.client.create_table(name)
-        print(f"  ✓ 创建表: {name} ({table_id})")
+        click.echo(f"  ✓ 创建表: {name} ({table_id})")
         return table_id
 
     def setup_all_tables(self) -> dict[str, str]:
@@ -77,7 +78,7 @@ class BitableSchemaManager:
             name = table_def["name"]
             if name in existing_tables:
                 table_ids[table_key] = existing_tables[name]
-                print(f"  - 表已存在: {name} ({existing_tables[name]})")
+                click.echo(f"  - 表已存在: {name} ({existing_tables[name]})")
             else:
                 table_id = self.ensure_table(name)
                 table_ids[table_key] = table_id
@@ -92,9 +93,9 @@ class BitableSchemaManager:
                 try:
                     result = self.client.add_field(tid, field_name, field_type, options)
                     if result.get("created"):
-                        print(f"    ✓ 添加字段: {field_name}")
+                        click.echo(f"    ✓ 添加字段: {field_name}")
                 except Exception as e:
-                    print(f"    ⚠ 字段 {field_name} 添加失败: {e}")
+                    click.echo(f"    ⚠ 字段 {field_name} 添加失败: {e}")
 
         return table_ids
 
@@ -103,17 +104,17 @@ class BitableSchemaManager:
         schema = load_schema_config()
         tables = self.get_existing_tables()
 
-        print(f"\n多维表格: {self.app_token}")
-        print("=" * 60)
+        click.echo(f"\n多维表格: {self.app_token}")
+        click.echo("=" * 60)
 
         for table_key, table_def in schema.get("tables", {}).items():
             name = table_def["name"]
             status = "✓" if name in tables else "✗ (未创建)"
             fields_count = len(table_def.get("fields", []))
-            print(f"  [{status}] {name} ({table_key}) — {fields_count} 个字段定义了")
+            click.echo(f"  [{status}] {name} ({table_key}) — {fields_count} 个字段定义了")
 
-        print("=" * 60)
-        print(f"共 {len(schema.get('tables', {}))} 张表")
+        click.echo("=" * 60)
+        click.echo(f"共 {len(schema.get('tables', {}))} 张表")
 
 
 if __name__ == "__main__":
