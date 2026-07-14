@@ -33,8 +33,9 @@
 - **竞品分析**：横向排名、多维度指标对比
 - **飞书多维表格同步**：增量 Diff + 批量 Upsert，幂等无重复
 - **定时调度**：APScheduler 或 Windows 任务计划，每日自动运行
+- **飞书账号管理**：在飞书表格中直接管理监控账号，无需编辑配置文件
 - **离线兼容**：无飞书凭证时自动降级，不阻塞本地计算
-- **平台扩展预留**：4 张表含 `platform` 字段，为公众号等接入做准备
+- **平台扩展预留**：5 张表含 `platform` 字段，为公众号等接入做准备
 
 ---
 
@@ -99,9 +100,33 @@ https://xxxx.feishu.cn/base/HvqUb97pqaREuXsg97ic3WoUnMf
 
 在飞书打开多维表格 → 右上角 `...` → `添加文档应用` → 搜索你的应用名 → 添加。
 
-首次运行 `xhs-feishu setup` 会自动创建 4 张数据表。
+首次运行 `xhs-feishu setup` 会自动创建 5 张数据表（含账号管理表）。
 
 ### 3. 账号列表
+
+有两种方式配置监控账号：
+
+**方式 A：飞书表格管理（推荐）**
+
+直接在飞书多维表格的「账号管理」表中填写账号信息：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| 账号ID | ✅ | 系统内部唯一标识（自定义） |
+| XHS用户ID | ✅ | 小红书平台用户 ID（32位十六进制） |
+| XHS用户名 | | 小红书用户名 |
+| 显示名称 | | 飞书展示用 |
+| 账号类型 | | 自有账号 / 竞品账号 |
+| 启用 | ✅ | ☑ 勾选才参与采集 |
+
+编辑完成后，使用 `--source bitable` 从飞书加载账号：
+
+```powershell
+xhs-feishu run --source bitable
+# 或直接双击「每日采集.bat」
+```
+
+**方式 B：YAML 配置文件**
 
 编辑 `config/accounts.yaml`，替换占位符为真实账号：
 
@@ -114,13 +139,21 @@ own_accounts:
     competitor: false
 ```
 
+> `--source auto` 会优先尝试飞书，失败时自动回退到 YAML。
+
 ---
 
 ## 日常使用
 
-### 浏览器自动采集（推荐）
+### 一键采集（最简单）
 
-每天跑一次即可获取实时数据：
+双击项目根目录下的 `每日采集.bat`，自动完成采集 → 转换 → 同步全流程。适合日常使用。
+
+> 前提：已在飞书「账号管理」表中填写账号信息并勾选「启用」。
+
+### 浏览器自动采集（推荐有实时数据需求的场景）
+
+每天跑一次即可获取实时互动数据：
 
 **① 启动 Chrome 调试模式**
 
@@ -191,18 +224,27 @@ xhs-feishu start
 
 | 命令 | 用途 |
 |------|------|
-| `xhs-feishu setup` | 初始化数据库 + 飞书表（幂等） |
+| `xhs-feishu setup` | 初始化数据库 + 5张飞书表（幂等） |
 | `xhs-feishu test-feishu` | 验证飞书连接 |
 | `xhs-feishu test-collect` | 干跑采集（不写飞书） |
-| `xhs-feishu run` | **核心命令**：采集 → 转换 → 同步 |
+| `xhs-feishu run` | **核心命令**：采集 → 转换 → 同步（默认 YAML 账号） |
+| `xhs-feishu run -s bitable` | 从飞书「账号管理」表读取账号 |
+| `xhs-feishu run -s auto` | 优先飞书，失败回退 YAML |
 | `xhs-feishu run --date 2026-07-10` | 指定日期采集 |
 | `xhs-feishu start` | 启动定时调度器 |
 | `xhs-feishu status` | 查看最近同步状态 |
-| `xhs-feishu clear` | 清理指定账号数据（见下方） |
+| `xhs-feishu clear --all --confirm` | 清空全部数据（保留账号管理表） |
+| `xhs-feishu clear --account 账号名` | 清理指定账号数据 |
 
 ---
 
 ## 清理数据
+
+### 一键清空（最简单）
+
+双击 `删除.bat`，输入 `YES` 确认，清空 4 张数据表 + 本地 SQLite（「账号管理」表不受影响）。
+
+### 按账号清理
 
 删除指定账号在飞书表格和本地数据库中的全部数据：
 
@@ -244,6 +286,7 @@ xhs-feishu clear --account 账号名 --confirm
 
 | 表名 | 用途 | 关键字段 |
 |------|------|---------|
+| **账号管理** | 监控账号配置（团队协作编辑） | 账号ID/XHS用户ID/账号类型/启用 |
 | **账号概览** | 每账号一行，当前指标 + 趋势 | 粉丝数/日增量/周增量/增长率/异常标记 |
 | **笔记数据明细** | 每笔记一行，互动数据 | 浏览量/点赞/收藏/评论/分享/日增量 |
 | **每日快照** | 账号 × 日期时间序列 | 每日粉丝/关注/获赞/笔记数/互动总量 |
@@ -268,7 +311,7 @@ Chrome CDP (端口 9222)
   数据标准化 → 趋势计算(DoD/WoW/3σ) → 竞品排名
        │
        ▼
-  SQLite (本地持久化) → 飞书多维表格 (4张表)
+  SQLite (本地持久化) → 飞书多维表格 (5张表)
        │
        ▼
   飞书 Bot 通知 (日报摘要 / 错误告警)
@@ -286,6 +329,7 @@ Chrome CDP (端口 9222)
 | 趋势计算 | `src/transformers/trend_calculator.py` | DoD/WoW/3σ 异常检测 |
 | 竞品分析 | `src/transformers/competitor.py` | 排名、横向对比 |
 | 飞书客户端 | `src/loaders/bitable_client.py` | Token 管理、CRUD、重试 |
+| 账号管理 | `src/loaders/account_manager.py` | 从飞书表加载监控账号 |
 | 同步引擎 | `src/loaders/sync_engine.py` | Diff 增量、批量 Upsert |
 | 调度器 | `src/scheduler/jobs.py` | APScheduler 定时任务 |
 | Bot 通知 | `src/notifiers/feishu_bot.py` | 飞书消息卡片 |
@@ -355,6 +399,8 @@ xhs-feishu-sync/
 │   ├── notifiers/             # Bot 通知
 │   └── scheduler/             # APScheduler 定时
 ├── scripts/                   # setup.bat / start_chrome.bat / daily_run.bat
+├── 每日采集.bat                # 一键采集同步
+├── 删除.bat                    # 一键清空数据
 ├── data/                      # CSV 导入 + SQLite 数据库
 ├── docs/                      # 设计文档
 └── devlog/                    # 开发日志
