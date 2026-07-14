@@ -14,6 +14,8 @@ import lark_oapi as lark
 from lark_oapi.api.bitable.v1 import (
     BatchCreateAppTableRecordRequest,
     BatchCreateAppTableRecordRequestBody,
+    BatchDeleteAppTableRecordRequest,
+    BatchDeleteAppTableRecordRequestBody,
     BatchUpdateAppTableRecordRequest,
     BatchUpdateAppTableRecordRequestBody,
     CreateAppTableRequest,
@@ -405,6 +407,59 @@ class BitableClient:
                 result.append({
                     "record_id": item.record_id,
                     "fields": item.fields or {},
+                })
+        return result
+
+    @retry(
+        retry=retry_if_exception_type(FeishuRateLimitError),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+    )
+    def batch_delete_records(
+        self, table_id: str, record_ids: list[str]
+    ) -> list[dict]:
+        """批量删除记录（最多 500 条/次）。
+
+        Args:
+            table_id: 数据表ID
+            record_ids: ["rec_xxx", "rec_yyy", ...]
+
+        Returns:
+            [{"record_id": "rec_xxx", "deleted": True}, ...]
+        """
+        if not record_ids:
+            return []
+
+        self.ensure_token()
+
+        body = (
+            BatchDeleteAppTableRecordRequestBody.builder()
+            .records(record_ids)
+            .build()
+        )
+        req = (
+            BatchDeleteAppTableRecordRequest.builder()
+            .app_token(self.app_token)
+            .table_id(table_id)
+            .request_body(body)
+            .build()
+        )
+
+        resp = self._client.bitable.v1.app_table_record.batch_delete(req)
+
+        if not resp.success():
+            if resp.code == 99991400:
+                raise FeishuRateLimitError(f"飞书 API 频率限制: {resp.msg}")
+            raise FeishuApiError(
+                f"批量删除记录失败: code={resp.code}, msg={resp.msg}"
+            )
+
+        result = []
+        if resp.data and resp.data.records:
+            for item in resp.data.records:
+                result.append({
+                    "record_id": item.record_id,
+                    "deleted": item.deleted,
                 })
         return result
 

@@ -303,5 +303,223 @@ def status():
         sys.exit(1)
 
 
+@cli.command()
+@click.option("--account", "-a", "accounts", multiple=True, help="要清理的账号名（可多次指定），如 --account test_brand")
+@click.option("--table", "-t", "table_filter", default=None, help="仅清理指定表: account_summary/note_metrics/daily_snapshot/competitor_comparison")
+@click.option("--confirm", is_flag=True, default=False, help="必须显式传入才执行真正删除，否则仅预览")
+@click.option("--keep-local", is_flag=True, default=False, help="保留本地 SQLite 数据，仅清理飞书")
+def clear(accounts: tuple[str, ...], table_filter: str | None, confirm: bool, keep_local: bool):
+    """清理飞书多维表格中的指定账号数据（同时清理本地 SQLite）。
+
+    默认干跑模式：只展示会被删除的记录，不执行删除。
+    必须传入 --confirm 才会真正执行。
+
+    示例：
+      xhs-feishu clear --account test_brand               # 预览
+      xhs-feishu clear --account test_brand --confirm     # 执行删除
+      xhs-feishu clear -a acc1 -a acc2 --table note_metrics --confirm
+    """
+    import logging
+    import sys
+
+    from src.core.config import load_config
+    from src.core.logging import setup_logging
+    from src.loaders.bitable_client import BitableClient
+    from src.storage.models import AccountSnapshot, NoteInfo, NoteSnapshot, SyncState
+    from src.storage.sqlite import Database
+
+    config = load_config()
+    setup_logging(config.logging)
+    logger = logging.getLogger(__name__)
+
+    if not accounts:
+        click.echo("✗ 请用 --account 指定要清理的账号名（可多次传），如: --account test_brand")
+        click.echo("  提示：用 xhs-feishu status 查看当前有哪些账号的同步记录")
+        sys.exit(1)
+
+    # ── 表名映射 ──
+    table_zh_names = {
+        "account_summary": "账号概览",
+        "note_metrics": "笔记数据明细",
+        "daily_snapshot": "每日快照",
+        "competitor_comparison": "竞品对比",
+    }
+    # 各表用于匹配账号的字段
+    table_account_field = {
+        "account_summary": "账号名称",
+        "note_metrics": "所属账号",
+        "daily_snapshot": "账号名称",
+        "competitor_comparison": "账号名称",
+    }
+
+    target_tables = [table_filter] if table_filter else list(table_zh_names.keys())
+    # 校验表名
+    for t in target_tables:
+        if t not in table_zh_names:
+            click.echo(f"✗ 无效表名: {t}，可选值: {', '.join(table_zh_names.keys())}")
+            sys.exit(1)
+
+    click.echo("=" * 60)
+    click.echo("  清理飞书多维表格 + 本地 SQLite 数据")
+    click.echo("=" * 60)
+    click.echo(f"\n  目标账号: {', '.join(accounts)}")
+    click.echo(f"  目标表:   {', '.join(table_zh_names[t] for t in target_tables)}")
+    click.echo(f"  模式:     {'🔍 干跑预览 (加 --confirm 执行)' if not confirm else '⚠ 确认删除'}")
+
+    # ── 连接飞书 ──
+    click.echo("\n[1/3] 连接飞书多维表格...")
+    try:
+        client = BitableClient(config.feishu)
+        client.ensure_token()
+        tables = client.list_tables()
+        name_to_id = {t["name"]: t["table_id"] for t in tables}
+        click.echo(f"  ✓ 已连接，共 {len(tables)} 张表")
+    except Exception as e:
+        click.echo(f"\n✗ 连接飞书失败: {e}")
+        sys.exit(1)
+
+    # ── 扫描记录 ──
+    click.echo("\n[2/3] 扫描待删除记录...")
+    deletion_plan: dict[str, list[dict]] = {}  # {table_key: [{"record_id": ..., "fields": ...}, ...]}
+    not_found_tables: list[str] = []
+
+    for table_key in target_tables:
+        zh_name = table_zh_names[table_key]
+        if zh_name not in name_to_id:
+            click.echo(f"  ⚠ 飞书中未找到表: {zh_name}，跳过")
+            not_found_tables.append(table_key)
+            continue
+
+        table_id = name_to_id[zh_name]
+        match_field = table_account_field[table_key]
+        matched: list[dict] = []
+
+        # 分页拉取全表记录
+        page_token = None
+        page_count = 0
+        while True:
+            result = client.list_records(table_id, page_token=page_token)
+            for rec in result["records"]:
+                field_value = str(rec["fields"].get(match_field, ""))
+                if field_value in accounts:
+                    matched.append(rec)
+            page_count += 1
+            if not result["has_more"]:
+                break
+            page_token = result["page_token"]
+
+        deletion_plan[table_key] = matched
+        click.echo(f"  {zh_name}: {len(matched)} 条记录")
+
+    # ── 汇总 ──
+    total_feishu = sum(len(v) for v in deletion_plan.values())
+    click.echo(f"\n  ─────────────────────")
+    click.echo(f"  飞书待删除合计: {total_feishu} 条")
+
+    # 统计 SQLite 待删除数
+    total_sqlite = 0
+    if not keep_local:
+        try:
+            db = Database(config.storage.sqlite_path)
+            db.init()
+            with db.session() as session:
+                for acc in accounts:
+                    snapshots = session.query(AccountSnapshot).filter_by(account_id=acc).count()
+                    notes = session.query(NoteInfo).filter_by(account_id=acc).count()
+                    note_ss = session.query(NoteSnapshot).filter_by(account_id=acc).count()
+                    sync = session.query(SyncState).filter_by(account_id=acc).count()
+                    total_sqlite += snapshots + notes + note_ss + sync
+            click.echo(f"  本地 SQLite 待删除合计: {total_sqlite} 条")
+            click.echo(f"    (AccountSnapshot + NoteInfo + NoteSnapshot + SyncState)")
+        except Exception as e:
+            click.echo(f"  ⚠ 无法统计 SQLite 数据: {e}")
+    else:
+        click.echo(f"  本地 SQLite: 跳过 (--keep-local)")
+
+    click.echo(f"\n  ─────────────────────")
+    click.echo(f"  总计: {total_feishu + total_sqlite} 条记录将被删除")
+
+    if total_feishu == 0 and total_sqlite == 0:
+        click.echo("\n✓ 没有需要清理的数据。")
+        return
+
+    # ── 干跑模式 → 停止 ──
+    if not confirm:
+        click.echo(f"\n🔍 干跑完成。以上记录将会被删除。")
+        click.echo(f"   如需执行删除，请加上 --confirm 参数。")
+        return
+
+    # ── 确认执行 ──
+    click.echo(f"\n⚠ 即将删除以上全部数据，此操作不可恢复！")
+    click.echo("=" * 60)
+
+    # ── 删除飞书记录 ──
+    if total_feishu > 0:
+        click.echo("\n[3/3] 执行删除...")
+        feishu_deleted = 0
+        feishu_failed = 0
+
+        for table_key in target_tables:
+            records = deletion_plan.get(table_key, [])
+            if not records:
+                continue
+
+            zh_name = table_zh_names[table_key]
+            if zh_name not in name_to_id:
+                continue
+            table_id = name_to_id[zh_name]
+            record_ids = [r["record_id"] for r in records]
+
+            # 分批删除（每批最多 500 条）
+            batch_size = 500
+            for i in range(0, len(record_ids), batch_size):
+                batch = record_ids[i : i + batch_size]
+                try:
+                    result = client.batch_delete_records(table_id, batch)
+                    deleted_count = sum(1 for r in result if r.get("deleted"))
+                    feishu_deleted += deleted_count
+                    failed_in_batch = len(batch) - deleted_count
+                    feishu_failed += failed_in_batch
+                    click.echo(f"  ✓ {zh_name}: {deleted_count}/{len(batch)} 条已删除" +
+                               (f", {failed_in_batch} 条失败" if failed_in_batch else ""))
+                    # 大批次间加延迟避免限流
+                    if len(batch) >= 400 and i + batch_size < len(record_ids):
+                        import time
+                        time.sleep(0.5)
+                except Exception as e:
+                    click.echo(f"  ✗ {zh_name} 批次删除失败: {e}")
+                    feishu_failed += len(batch)
+
+        click.echo(f"\n  飞书删除: {feishu_deleted} 条成功, {feishu_failed} 条失败")
+    else:
+        click.echo("\n[3/3] 飞书无数据需删除，跳过。")
+
+    # ── 清理 SQLite ──
+    if not keep_local and total_sqlite > 0:
+        click.echo("\n  清理本地 SQLite...")
+        try:
+            db = Database(config.storage.sqlite_path)
+            db.init()
+            with db.session() as session:
+                for acc in accounts:
+                    # 按顺序删除：先删子表再删主表
+                    deleted_ns = session.query(NoteSnapshot).filter_by(account_id=acc).delete()
+                    deleted_ni = session.query(NoteInfo).filter_by(account_id=acc).delete()
+                    deleted_as = session.query(AccountSnapshot).filter_by(account_id=acc).delete()
+                    deleted_ss = session.query(SyncState).filter_by(account_id=acc).delete()
+                    total = deleted_ns + deleted_ni + deleted_as + deleted_ss
+                    if total > 0:
+                        click.echo(f"  ✓ {acc}: {total} 条已删除 " +
+                                   f"(快照{deleted_as}+笔记{deleted_ni}+笔记快照{deleted_ns}+同步{deleted_ss})")
+                session.commit()
+            click.echo("  ✓ SQLite 清理完成")
+        except Exception as e:
+            click.echo(f"  ✗ SQLite 清理失败: {e}")
+
+    click.echo(f"\n{'=' * 60}")
+    click.echo("✓ 清理完成")
+    click.echo(f"{'=' * 60}")
+
+
 if __name__ == "__main__":
     cli()
