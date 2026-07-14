@@ -1,5 +1,5 @@
 # ── 飞书多维表格 Schema 定义 ──
-# 定义4张数据表的字段结构
+# 定义5张数据表的字段结构
 
 tables:
   # 表1: 账号概览
@@ -141,3 +141,33 @@ tables:
         type: 2
       - name: "对比日期"
         type: 5
+
+  # 表5: 账号管理
+  account_manager:
+    name: "账号管理"
+    fields:
+      - name: "账号ID"
+        type: 1        # Text — 必填，系统内部标识
+      - name: "XHS用户ID"
+        type: 1        # Text — 必填，小红书平台ID
+      - name: "XHS用户名"
+        type: 1        # Text
+      - name: "显示名称"
+        type: 1        # Text — 飞书展示用
+      - name: "账号类型"
+        type: 3        # SingleSelect
+        options:
+          - name: "自有账号"
+            color: 1   # Blue
+          - name: "竞品账号"
+            color: 2   # Red
+      - name: "启用"
+        type: 7        # Checkbox — 勾选才参与采集
+      - name: "粉丝数"
+        type: 2        # Number — 可选基线值（CSV回退用）
+      - name: "关注数"
+        type: 2
+      - name: "总获赞"
+        type: 2
+      - name: "总收藏"
+        type: 2

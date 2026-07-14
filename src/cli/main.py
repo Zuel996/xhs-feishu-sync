@@ -102,7 +102,13 @@ def test_feishu():
 
 @cli.command()
 @click.option("--account", "-a", default=None, help="仅测试指定账号ID")
-def test_collect(account: str | None):
+@click.option(
+    "--source", "-s",
+    type=click.Choice(["yaml", "bitable", "auto"]),
+    default="yaml",
+    help="账号配置来源: yaml (默认) | bitable (飞书表格) | auto (优先飞书)",
+)
+def test_collect(account: str | None, source: str):
     """测试数据采集（干跑模式，输出到控制台/日志）。"""
     import asyncio
     import logging
@@ -113,7 +119,7 @@ def test_collect(account: str | None):
     config = load_config()
     setup_logging(config.logging)
     logger = logging.getLogger(__name__)
-    accounts_cfg = load_accounts()
+    accounts_cfg = load_accounts(source=source)
 
     all_accounts = accounts_cfg.all_accounts
     if account:
@@ -167,13 +173,19 @@ def test_collect(account: str | None):
 
 @cli.command()
 @click.option("--date", "-d", default=None, help="仅同步指定日期的笔记 (YYYY-MM-DD)，不传则导入全部")
-def run(date: str | None):
+@click.option(
+    "--source", "-s",
+    type=click.Choice(["yaml", "bitable", "auto"]),
+    default="yaml",
+    help="账号配置来源: yaml (默认) | bitable (飞书表格) | auto (优先飞书)",
+)
+def run(date: str | None, source: str):
     """执行一次完整的数据采集→转换→同步流程。"""
     import asyncio
     import logging
     from datetime import date as date_type, datetime
 
-    from src.core.config import load_accounts, load_config
+    from src.core.config import load_config
     from src.core.logging import setup_logging
 
     config = load_config()
@@ -189,22 +201,14 @@ def run(date: str | None):
             sys.exit(1)
 
     logger.info("=" * 50)
-    logger.info("开始执行数据同步: %s", (target_date or date_type.today()).isoformat())
+    logger.info("开始执行数据同步: %s (来源: %s)", (target_date or date_type.today()).isoformat(), source)
     logger.info("=" * 50)
-
-    accounts_cfg = load_accounts()
-    all_accounts = accounts_cfg.all_accounts
-    if not all_accounts:
-        click.echo("⚠ 没有配置任何监控账号。请在 config/accounts.yaml 中添加账号。")
-        return
-
-    click.echo(f"将处理 {len(all_accounts)} 个账号\n")
 
     async def _run():
         from src.core.pipeline import run_pipeline
         from src.notifiers.feishu_bot import FeishuBotNotifier
 
-        result = await run_pipeline(target_date)
+        result = await run_pipeline(target_date, source=source)
 
         click.echo(f"\n{'=' * 50}")
         click.echo(
@@ -305,10 +309,11 @@ def status():
 
 @cli.command()
 @click.option("--account", "-a", "accounts", multiple=True, help="要清理的账号名（可多次指定），如 --account test_brand")
+@click.option("--all", "delete_all", is_flag=True, default=False, help="清理所有表的全部数据（无需指定 --account）")
 @click.option("--table", "-t", "table_filter", default=None, help="仅清理指定表: account_summary/note_metrics/daily_snapshot/competitor_comparison")
 @click.option("--confirm", is_flag=True, default=False, help="必须显式传入才执行真正删除，否则仅预览")
 @click.option("--keep-local", is_flag=True, default=False, help="保留本地 SQLite 数据，仅清理飞书")
-def clear(accounts: tuple[str, ...], table_filter: str | None, confirm: bool, keep_local: bool):
+def clear(accounts: tuple[str, ...], delete_all: bool, table_filter: str | None, confirm: bool, keep_local: bool):
     """清理飞书多维表格中的指定账号数据（同时清理本地 SQLite）。
 
     默认干跑模式：只展示会被删除的记录，不执行删除。
@@ -318,6 +323,7 @@ def clear(accounts: tuple[str, ...], table_filter: str | None, confirm: bool, ke
       xhs-feishu clear --account test_brand               # 预览
       xhs-feishu clear --account test_brand --confirm     # 执行删除
       xhs-feishu clear -a acc1 -a acc2 --table note_metrics --confirm
+      xhs-feishu clear --all --confirm                    # 删除全部数据
     """
     import logging
     import sys
@@ -332,8 +338,10 @@ def clear(accounts: tuple[str, ...], table_filter: str | None, confirm: bool, ke
     setup_logging(config.logging)
     logger = logging.getLogger(__name__)
 
-    if not accounts:
-        click.echo("✗ 请用 --account 指定要清理的账号名（可多次传），如: --account test_brand")
+    if not accounts and not delete_all:
+        click.echo("✗ 请用 --account 指定要清理的账号名，或用 --all 清理全部数据")
+        click.echo("  示例: xhs-feishu clear --account test_brand")
+        click.echo("  示例: xhs-feishu clear --all --confirm")
         click.echo("  提示：用 xhs-feishu status 查看当前有哪些账号的同步记录")
         sys.exit(1)
 
@@ -362,7 +370,10 @@ def clear(accounts: tuple[str, ...], table_filter: str | None, confirm: bool, ke
     click.echo("=" * 60)
     click.echo("  清理飞书多维表格 + 本地 SQLite 数据")
     click.echo("=" * 60)
-    click.echo(f"\n  目标账号: {', '.join(accounts)}")
+    if delete_all:
+        click.echo(f"\n  目标:    🗑 全部数据")
+    else:
+        click.echo(f"\n  目标账号: {', '.join(accounts)}")
     click.echo(f"  目标表:   {', '.join(table_zh_names[t] for t in target_tables)}")
     click.echo(f"  模式:     {'🔍 干跑预览 (加 --confirm 执行)' if not confirm else '⚠ 确认删除'}")
 
@@ -399,14 +410,17 @@ def clear(accounts: tuple[str, ...], table_filter: str | None, confirm: bool, ke
         page_count = 0
         while True:
             result = client.list_records(table_id, page_token=page_token)
-            for rec in result["records"]:
-                field_value = str(rec["fields"].get(match_field, ""))
-                if field_value in accounts:
+            for rec in result.get("records", []):
+                if delete_all:
                     matched.append(rec)
+                else:
+                    field_value = str(rec.get("fields", {}).get(match_field, ""))
+                    if field_value in accounts:
+                        matched.append(rec)
             page_count += 1
-            if not result["has_more"]:
+            if not result.get("has_more"):
                 break
-            page_token = result["page_token"]
+            page_token = result.get("page_token")
 
         deletion_plan[table_key] = matched
         click.echo(f"  {zh_name}: {len(matched)} 条记录")
@@ -423,12 +437,19 @@ def clear(accounts: tuple[str, ...], table_filter: str | None, confirm: bool, ke
             db = Database(config.storage.sqlite_path)
             db.init()
             with db.session() as session:
-                for acc in accounts:
-                    snapshots = session.query(AccountSnapshot).filter_by(account_id=acc).count()
-                    notes = session.query(NoteInfo).filter_by(account_id=acc).count()
-                    note_ss = session.query(NoteSnapshot).filter_by(account_id=acc).count()
-                    sync = session.query(SyncState).filter_by(account_id=acc).count()
-                    total_sqlite += snapshots + notes + note_ss + sync
+                if delete_all:
+                    snapshots = session.query(AccountSnapshot).count()
+                    notes = session.query(NoteInfo).count()
+                    note_ss = session.query(NoteSnapshot).count()
+                    sync = session.query(SyncState).count()
+                    total_sqlite = snapshots + notes + note_ss + sync
+                else:
+                    for acc in accounts:
+                        snapshots = session.query(AccountSnapshot).filter_by(account_id=acc).count()
+                        notes = session.query(NoteInfo).filter_by(account_id=acc).count()
+                        note_ss = session.query(NoteSnapshot).filter_by(account_id=acc).count()
+                        sync = session.query(SyncState).filter_by(account_id=acc).count()
+                        total_sqlite += snapshots + notes + note_ss + sync
             click.echo(f"  本地 SQLite 待删除合计: {total_sqlite} 条")
             click.echo(f"    (AccountSnapshot + NoteInfo + NoteSnapshot + SyncState)")
         except Exception as e:
@@ -501,16 +522,24 @@ def clear(accounts: tuple[str, ...], table_filter: str | None, confirm: bool, ke
             db = Database(config.storage.sqlite_path)
             db.init()
             with db.session() as session:
-                for acc in accounts:
-                    # 按顺序删除：先删子表再删主表
-                    deleted_ns = session.query(NoteSnapshot).filter_by(account_id=acc).delete()
-                    deleted_ni = session.query(NoteInfo).filter_by(account_id=acc).delete()
-                    deleted_as = session.query(AccountSnapshot).filter_by(account_id=acc).delete()
-                    deleted_ss = session.query(SyncState).filter_by(account_id=acc).delete()
-                    total = deleted_ns + deleted_ni + deleted_as + deleted_ss
-                    if total > 0:
-                        click.echo(f"  ✓ {acc}: {total} 条已删除 " +
-                                   f"(快照{deleted_as}+笔记{deleted_ni}+笔记快照{deleted_ns}+同步{deleted_ss})")
+                if delete_all:
+                    # 全表删除
+                    deleted_ns = session.query(NoteSnapshot).delete()
+                    deleted_ni = session.query(NoteInfo).delete()
+                    deleted_as = session.query(AccountSnapshot).delete()
+                    deleted_ss = session.query(SyncState).delete()
+                    click.echo(f"  ✓ 全部删除: {deleted_ns + deleted_ni + deleted_as + deleted_ss} 条 " +
+                               f"(快照{deleted_as}+笔记{deleted_ni}+笔记快照{deleted_ns}+同步{deleted_ss})")
+                else:
+                    for acc in accounts:
+                        deleted_ns = session.query(NoteSnapshot).filter_by(account_id=acc).delete()
+                        deleted_ni = session.query(NoteInfo).filter_by(account_id=acc).delete()
+                        deleted_as = session.query(AccountSnapshot).filter_by(account_id=acc).delete()
+                        deleted_ss = session.query(SyncState).filter_by(account_id=acc).delete()
+                        total = deleted_ns + deleted_ni + deleted_as + deleted_ss
+                        if total > 0:
+                            click.echo(f"  ✓ {acc}: {total} 条已删除 " +
+                                       f"(快照{deleted_as}+笔记{deleted_ni}+笔记快照{deleted_ns}+同步{deleted_ss})")
                 session.commit()
             click.echo("  ✓ SQLite 清理完成")
         except Exception as e:

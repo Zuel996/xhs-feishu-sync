@@ -5,6 +5,7 @@
 
 import asyncio
 import logging
+import os
 from datetime import date
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -29,7 +30,8 @@ def _run_sync_job():
 
     try:
         # asyncio.run 在同步函数中运行异步 Pipeline
-        result = asyncio.run(run_pipeline())
+        source = os.getenv("ACCOUNT_SOURCE", "yaml")
+        result = asyncio.run(run_pipeline(source=source))
 
         # 提取高亮数据
         highlights = []
@@ -58,7 +60,7 @@ def _run_sync_job():
             notifier.send_text(
                 "⚠️ 数据同步提示",
                 "未配置监控账号或所有账号同步失败。\n"
-                "请检查 config/accounts.yaml 配置。",
+                "请检查账号配置（YAML 或飞书 '账号管理' 表）。",
             )
 
     except Exception as e:

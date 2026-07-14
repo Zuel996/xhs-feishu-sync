@@ -203,17 +203,20 @@ class PipelineRunner:
 
         return result
 
-    async def run_all_accounts(self) -> dict:
+    async def run_all_accounts(self, source: str = "yaml") -> dict:
         """运行所有配置账号的采集→同步流程。
+
+        Args:
+            source: 账号配置来源 ("yaml" | "bitable" | "auto")，默认 "yaml"
 
         Returns:
             {"total": N, "success": N, "failed": N, "details": [...]}
         """
-        accounts_cfg = load_accounts()
+        accounts_cfg = load_accounts(source=source)
         all_accounts = accounts_cfg.all_accounts
 
         if not all_accounts:
-            logger.warning("没有配置任何监控账号。请在 config/accounts.yaml 中添加账号。")
+            logger.warning("没有配置任何监控账号。请添加账号或检查账号配置来源。")
             return {"total": 0, "success": 0, "failed": 0, "details": []}
 
         logger.info("开始批量处理 %d 个账号", len(all_accounts))
@@ -308,10 +311,13 @@ class PipelineRunner:
             await self.collector.close()
 
 
-async def run_pipeline(target_date: Optional[date] = None) -> dict:
+async def run_pipeline(
+    target_date: Optional[date] = None,
+    source: str = "yaml",
+) -> dict:
     """快捷入口: 运行一次完整 Pipeline。"""
     runner = PipelineRunner(target_date)
     try:
-        return await runner.run_all_accounts()
+        return await runner.run_all_accounts(source=source)
     finally:
         await runner.close()

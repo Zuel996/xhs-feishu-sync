@@ -188,16 +188,85 @@ def load_config() -> AppConfig:
     return _config
 
 
-def load_accounts() -> AccountsConfig:
-    """加载并缓存账号配置。"""
+def _load_accounts_from_yaml() -> AccountsConfig:
+    """从 YAML 文件加载账号配置（内部方法，不经缓存）。"""
+    try:
+        data = _load_yaml("accounts.yaml")
+        return AccountsConfig(**data)
+    except ValidationError as e:
+        raise ConfigError(f"账号配置验证失败:\n{e}") from e
+
+
+def load_accounts_from_bitable() -> Optional[AccountsConfig]:
+    """从飞书 "账号管理" 表加载账号配置。
+
+    Returns:
+        AccountsConfig 或 None（飞书不可用或表不存在时返回 None）。
+    """
+    try:
+        from src.loaders.account_manager import FeishuAccountManager
+
+        manager = FeishuAccountManager()
+        if not manager.enabled:
+            return None
+
+        accounts = manager.load_accounts()
+        own = [a for a in accounts if not a.competitor]
+        competitors = [a for a in accounts if a.competitor]
+        return AccountsConfig(
+            own_accounts=own,
+            competitor_accounts=competitors,
+        )
+    except Exception:
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.warning("从飞书加载账号失败，将回退到 YAML 模式", exc_info=True)
+        return None
+
+
+def load_accounts(source: str = "yaml") -> AccountsConfig:
+    """加载账号配置。
+
+    Args:
+        source: 账号配置来源。
+            - "yaml"（默认）: 仅从 config/accounts.yaml 读取，结果缓存
+            - "bitable": 仅从飞书 "账号管理" 表读取，每次重新获取
+            - "auto": 优先飞书，不可用时回退 YAML，每次重新获取
+
+    Returns:
+        AccountsConfig
+
+    Raises:
+        ConfigError: 指定 source 不可用时抛出
+    """
     global _accounts
-    if _accounts is None:
-        try:
-            data = _load_yaml("accounts.yaml")
-            _accounts = AccountsConfig(**data)
-        except ValidationError as e:
-            raise ConfigError(f"账号配置验证失败:\n{e}") from e
-    return _accounts
+
+    if source == "yaml":
+        if _accounts is None:
+            _accounts = _load_accounts_from_yaml()
+        return _accounts
+
+    # bitable / auto: 不缓存，每次重新获取
+    if source == "bitable":
+        result = load_accounts_from_bitable()
+        if result is None:
+            raise ConfigError(
+                "无法从飞书加载账号配置。"
+                "请检查 FEISHU_APP_ID/FEISHU_APP_SECRET 是否已配置，"
+                "或运行 'xhs-feishu setup' 创建 '账号管理' 表。"
+                "也可使用 --source yaml 回退到 YAML 模式。"
+            )
+        return result
+
+    if source == "auto":
+        result = load_accounts_from_bitable()
+        if result is not None:
+            return result
+        # 回退 YAML（每次重新读取）
+        return _load_accounts_from_yaml()
+
+    raise ConfigError(f"不支持的账号来源: {source}，可选: yaml | bitable | auto")
 
 
 def reload_config() -> tuple[AppConfig, AccountsConfig]:
