@@ -1,6 +1,6 @@
 # 小红书 → 飞书多维表格 数据自动同步工具
 
-自动采集小红书账号数据（粉丝、笔记互动等），经过清洗、趋势计算和竞品排名后，同步到飞书多维表格。
+自动采集小红书创作者中心数据（粉丝、笔记互动等），经过清洗和趋势计算后，同步到飞书多维表格。
 
 ---
 
@@ -8,36 +8,33 @@
 
 - [功能特性](#功能特性)
 - [系统要求](#系统要求)
-- [安装](#安装)
+- [快速安装](#快速安装)
 - [配置](#配置)
   - [1. 飞书应用凭证](#1-飞书应用凭证)
-  - [2. 飞书多维表格权限](#2-飞书多维表格权限)
-  - [3. 监控账号列表](#3-监控账号列表)
-  - [4. 采集策略](#4-采集策略)
-  - [5. 调度时间](#5-调度时间)
-- [快速开始](#快速开始)
+  - [2. 多维表格授权](#2-多维表格授权)
+  - [3. 账号列表](#3-账号列表)
+- [日常使用](#日常使用)
+  - [浏览器自动采集（推荐）](#浏览器自动采集推荐)
+  - [CSV 文件导入（备用）](#csv-文件导入备用)
+- [定时自动化](#定时自动化)
 - [命令参考](#命令参考)
-- [数据文件格式](#数据文件格式)
+- [团队部署](#团队部署)
 - [飞书表格结构](#飞书表格结构)
 - [架构概览](#架构概览)
-- [定时运行](#定时运行)
-  - [方案A：APScheduler 常驻进程](#方案aapscheduler-常驻进程)
-  - [方案B：Windows 任务计划程序](#方案bwindows-任务计划程序)
-  - [方案C：GitHub Actions（未来）](#方案cgithub-actions未来)
 - [故障排查](#故障排查)
-- [开发指南](#开发指南)
 
 ---
 
 ## 功能特性
 
-- **多策略数据采集**：CSV 导入（当前）/ 浏览器自动化（Playwright CDP）/ 开放 API（未来）
-- **自动趋势计算**：日环比（DoD）、周环比（WoW）、增长率、3σ 异常检测
+- **浏览器自动采集**：通过 Chrome CDP 直连创作者中心，自动拦截并解析 API 数据
+- **Hybrid 智能合并**：浏览器实时数据优先，CSV 补充历史笔记（按 note_id 去重）
+- **趋势计算**：日环比（DoD）、周环比（WoW）、增长率、3σ 异常检测
 - **竞品分析**：横向排名、多维度指标对比
 - **飞书多维表格同步**：增量 Diff + 批量 Upsert，幂等无重复
-- **定时调度**：APScheduler + Cron 表达式，每日自动运行
-- **Bot 通知**：飞书消息卡片推送日报摘要 / 错误告警
-- **离线兼容**：无飞书凭证时自动降级为离线模式，不阻塞本地计算
+- **定时调度**：APScheduler 或 Windows 任务计划，每日自动运行
+- **离线兼容**：无飞书凭证时自动降级，不阻塞本地计算
+- **平台扩展预留**：4 张表含 `platform` 字段，为公众号等接入做准备
 
 ---
 
@@ -47,23 +44,28 @@
 |------|------|
 | Python | ≥ 3.11 |
 | 操作系统 | Windows / macOS / Linux |
-| 飞书 | 自建应用（或能添加"文档应用"的多维表格） |
-| 浏览器（可选） | Chrome（用于 CDP 自动化采集） |
+| 浏览器 | Google Chrome（浏览器模式） |
+| 飞书 | 自建应用，或能添加"文档应用"的多维表格 |
 
 ---
 
-## 安装
+## 快速安装
+
+### 方式一：一键安装（推荐）
+
+```batch
+scripts\setup.bat
+```
+
+自动完成：Python 检测 → 依赖安装 → 配置检查 → 数据库初始化。
+
+### 方式二：手动安装
 
 ```bash
-# 1. 克隆仓库
 git clone https://github.com/Zuel996/xhs-feishu-sync.git
 cd xhs-feishu-sync
-
-# 2. 安装依赖
 pip install -e .
-
-# 3. （可选）安装浏览器自动化依赖
-playwright install chromium
+playwright install chromium    # 仅浏览器模式需要
 ```
 
 ---
@@ -73,357 +75,227 @@ playwright install chromium
 ### 1. 飞书应用凭证
 
 ```bash
-# 复制配置模板
-copy .env.example .env   # Windows
-cp .env.example .env     # macOS/Linux
+copy .env.example .env
 ```
 
 编辑 `.env` 文件：
 
-```bash
-# 飞书应用凭证（必填，除非跑离线模式）
+```env
 FEISHU_APP_ID=cli_xxxxxxxxxxxx
 FEISHU_APP_SECRET=your_app_secret_here
-
-# 飞书多维表格 App Token（从 URL 提取）
-# https://xxxx.feishu.cn/base/HvqUb97pqaREuXsg97ic3WoUnMf
-#                              ^^^^^^^^^^^^^^^^^^^^^^^^
 FEISHU_BITABLE_APP_TOKEN=HvqUb97pqaREuXsg97ic3WoUnMf
-
-# 飞书 Bot Webhook（可选，日报推送用）
-FEISHU_BOT_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxxxx
+FEISHU_BOT_WEBHOOK_URL=        # 可选，日报推送
 ```
 
-> **获取凭证**：登录 [飞书开放平台](https://open.feishu.cn) → 创建自建应用 → 开通 `bitable:app` 权限 → 发布应用 → 在「凭证与基础信息」页获取 App ID / App Secret。
+**获取方式**：登录 [飞书开放平台](https://open.feishu.cn) → 创建自建应用 → 添加 `bitable:app` 权限 → 发布应用 → 凭证页面获取 App ID / Secret。
 
-### 2. 飞书多维表格权限
+Bitable App Token 从多维表格 URL 提取：
+```
+https://xxxx.feishu.cn/base/HvqUb97pqaREuXsg97ic3WoUnMf
+                           ^^^^^^^^^^^^^^^^^^^^^^^^
+```
 
-应用需要对目标多维表格有写入权限。两种方式任选其一：
+### 2. 多维表格授权
 
-| 方式 | 步骤 | 适用场景 |
-|------|------|---------|
-| **添加文档应用**（推荐） | 在飞书打开多维表格 → 右上角 `...` → `添加文档应用` → 搜索你的应用名 → 添加 | 最快，无需管理员 |
-| **管理员安装** | 管理后台 → 应用管理 → 自建应用 → 找到应用 → 安装 | 企业级正式部署 |
+在飞书打开多维表格 → 右上角 `...` → `添加文档应用` → 搜索你的应用名 → 添加。
 
-### 3. 监控账号列表
+首次运行 `xhs-feishu setup` 会自动创建 4 张数据表。
 
-编辑 `config/accounts.yaml`：
+### 3. 账号列表
+
+编辑 `config/accounts.yaml`，替换占位符为真实账号：
 
 ```yaml
 own_accounts:
-  - account_id: "my_brand"              # 唯一标识（英文/数字）
-    xhs_user_id: "5f3a2b1c0000000001001234"  # 小红书用户ID
-    xhs_username: "品牌官方号"            # 小红书用户名
-    display_name: "我的品牌"              # 飞书表格中显示的名称
-    competitor: false                    # false = 自有账号
-
-competitor_accounts:
-  - account_id: "competitor_a"
-    xhs_user_id: "5f3a2b1c0000000001005678"
-    xhs_username: "竞品A"
-    display_name: "竞品A"
-    competitor: true                     # true = 竞品账号
-```
-
-### 4. 采集策略
-
-编辑 `config/settings.yaml`：
-
-```yaml
-collection:
-  strategy: "csv"          # 当前策略（从CSV文件读取）
-  # 可选值: "browser" | "api" | "hybrid" | "csv"
-
-  browser:                 # 浏览器采集配置（strategy=browser 时生效）
-    cdp_endpoint: "http://localhost:9222"
-    headless: false
-    min_delay_seconds: 1.5
-    max_delay_seconds: 5.0
-    max_notes_per_account: 100
-```
-
-| 策略 | 说明 | 适用场景 |
-|------|------|---------|
-| `csv` | 从 CSV 文件导入数据 | 无 API 权限、追求稳定 |
-| `browser` | Playwright CDP 连接 Chrome 自动化采集 | 需要实时数据 |
-| `api` | 小红书开放平台 API | 有官方 API 权限 |
-| `hybrid` | API → Browser → CSV 三级降级 | 生产环境高可用 |
-
-### 5. 调度时间
-
-```yaml
-schedule:
-  cron: "0 8 * * *"           # 每天 8:00（中国时间）
-  timezone: "Asia/Shanghai"
-  retry_count: 3               # 失败重试次数
-  retry_delay_seconds: 300     # 重试间隔（秒）
+  - account_id: "my_brand"
+    xhs_user_id: "你的小红书用户ID"
+    xhs_username: "你的用户名"
+    display_name: "显示名称"
+    competitor: false
 ```
 
 ---
 
-## 快速开始
+## 日常使用
+
+### 浏览器自动采集（推荐）
+
+每天跑一次即可获取实时数据：
+
+```batch
+# 1. 启动 Chrome 调试模式（一次，保持运行）
+scripts\start_chrome.bat
+
+# 2. 在浏览器中确认已登录 creator.xiaohongshu.com
+
+# 3. 执行采集同步
+xhs-feishu run
+```
+
+浏览器模式自动从创作者中心 API 采集：
+- **账号数据**：粉丝、关注、获赞（`personal_info` API）
+- **笔记互动**：浏览、点赞、收藏、评论、分享（`note/analyze/list` API）
+- **每日趋势**：7/30 天聚合数据（`note_detail_new` API）
+
+### CSV 文件导入（备用）
+
+如果浏览器模式不可用，可以手动从创作者中心导出 Excel：
+
+1. 打开创作者中心 → 数据中心 → 笔记数据 → 导出
+2. 将导出的文件放入 `data/csv_imports/<account_id>/`
+3. 确认 `config/settings.yaml` 中 `collection.strategy: "hybrid"`
+4. 运行 `xhs-feishu run`
+
+Hybrid 模式下：浏览器数据优先（含实时互动指标），CSV 补充浏览器时间窗口外的历史笔记。
+
+---
+
+## 定时自动化
+
+### Windows 任务计划程序
+
+1. 确保 `start_chrome.bat` 已运行（Chrome 保持登录）
+2. 打开 **任务计划程序**（taskschd.msc）
+3. 创建基本任务：
+   - 触发器：**每天 09:00**
+   - 操作 → 启动程序：`C:\你的路径\xhs-feishu-sync\scripts\daily_run.bat`
+
+`daily_run.bat` 会自动检查 Chrome CDP 是否存活，然后执行 `xhs-feishu run`。
+
+### APScheduler 常驻进程（备选）
 
 ```bash
-# 第一步：初始化
-xhs-feishu setup
-# 将创建 SQLite 数据库 + 飞书多维表格 4 张表（含 51 个字段）
-
-# 第二步：测试连接
-xhs-feishu test-feishu
-# 输出 ✓ 表示飞书连接正常
-
-# 第三步：准备数据文件（CSV 模式）
-# 将小红书创作者中心导出的 CSV 放入：
-#   data/csv_imports/<account_id>/YYYY-MM-DD_export.csv
-# 示例：data/csv_imports/test_brand/2026-07-10_export.csv
-
-# 第四步：执行一次完整同步
-xhs-feishu run --date 2026-07-13
-# 输出 ✓ 完成 表示数据已写入飞书表格
-
-# 第五步：查看状态
-xhs-feishu status
+xhs-feishu start
 ```
+
+按 `Ctrl+C` 停止。适合开发/测试环境。
 
 ---
 
 ## 命令参考
 
-### `xhs-feishu setup`
-
-一次性初始化。创建本地 SQLite 数据库和飞书多维表格 4 张表。**幂等**，重复运行不会重复建表。
-
-```bash
-xhs-feishu setup
-```
-
-### `xhs-feishu test-feishu`
-
-测试飞书多维表格连接和权限。验证 App ID / Secret / App Token 是否配置正确。
-
-```bash
-xhs-feishu test-feishu
-```
-
-输出示例：
-```
-✓ Token 获取成功 (前8位: t-g1047d...)
-✓ 多维表格访问成功，共 8 张表
-✓ 飞书连接测试通过！
-```
-
-### `xhs-feishu test-collect`
-
-测试数据采集（干跑模式）。加载配置的账号，采集数据并输出到日志，**不写入飞书**。
-
-```bash
-xhs-feishu test-collect                    # 采集所有账号
-xhs-feishu test-collect --account my_brand  # 仅采集指定账号
-```
-
-### `xhs-feishu run`
-
-执行一次完整的 采集 → 转换 → 同步 流程。这是核心命令。
-
-```bash
-xhs-feishu run                    # 使用今天的日期
-xhs-feishu run --date 2026-07-13 # 指定日期
-```
-
-执行流程：
-```
-CSV 文件 → 数据标准化 → 趋势计算 → 竞品排名 → SQLite 存储 → 飞书同步
-```
-
-### `xhs-feishu start`
-
-启动定时调度器，每日按配置的 cron 时间自动运行。
-
-```bash
-xhs-feishu start
-# 按 Ctrl+C 停止
-```
-
-### `xhs-feishu status`
-
-查看上次同步状态。
-
-```bash
-xhs-feishu status
-```
+| 命令 | 用途 |
+|------|------|
+| `xhs-feishu setup` | 初始化数据库 + 飞书表（幂等） |
+| `xhs-feishu test-feishu` | 验证飞书连接 |
+| `xhs-feishu test-collect` | 干跑采集（不写飞书） |
+| `xhs-feishu run` | **核心命令**：采集 → 转换 → 同步 |
+| `xhs-feishu run --date 2026-07-10` | 指定日期采集 |
+| `xhs-feishu start` | 启动定时调度器 |
+| `xhs-feishu status` | 查看最近同步状态 |
 
 ---
 
-## 数据文件格式
+## 团队部署
 
-### CSV 文件路径规范
+### 推荐模式：单机采集 + 飞书消费
 
 ```
-data/csv_imports/
-  └── <account_id>/                    # 对应 accounts.yaml 中的 account_id
-      └── YYYY-MM-DD_export.csv        # 创作者中心导出的原始 CSV
+一台电脑 (Chrome + 定时任务)
+  └─ 自动采集 → 写入飞书多维表格
+                    │
+      ┌─────────────┼─────────────┐
+      ▼             ▼             ▼
+   团队成员A     团队成员B     团队成员C
+   (打开飞书)    (打开飞书)    (打开飞书)
 ```
 
-### CSV 列要求
+团队成员**零安装**，打开飞书多维表格就能看到最新数据，支持筛选、排序、评论。
 
-CSV 文件为小红书创作者中心导出的原始格式。程序会自动解析以下列：
+### 如果其他人也需要触发采集
 
-| CSV 列名 | 用途 | 格式要求 |
-|----------|------|---------|
-| 粉丝数 | 账号粉丝总数 | 数字，支持中文单位（"1.2万"、"3.5亿"）|
-| 关注数 | 账号关注数 | 数字 |
-| 获赞与收藏 | 累计获赞+收藏 | 数字 |
-| 笔记标题 | 笔记标题 | 文本 |
-| 笔记类型 | 图文/视频 | "图文" 或 "视频" |
-| 发布日期 | 笔记发布日期 | YYYY-MM-DD |
-| 笔记链接 | 笔记URL | https://... |
-| 浏览量 | 笔记浏览量 | 数字 |
-| 点赞数 | 点赞数 | 数字 |
-| 收藏数 | 收藏数 | 数字 |
-| 评论数 | 评论数 | 数字 |
-| 分享数 | 分享数 | 数字 |
+参考 [CSV 文件导入](#csv-文件导入备用) 章节，策略设为 `csv` 即可在无 Chrome 环境下使用。
 
 ---
 
 ## 飞书表格结构
 
-初始化后，多维表格中将创建 4 张数据表：
-
-### 表 1：账号概览（account_summary）
-
-每行一个监控账号，包含当前指标、趋势和异常标记。
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| 账号名称 | 文本 | 账号唯一标识 |
-| 账号类型 | 单选 | 自有账号 / 竞品账号 |
-| 粉丝数 | 数字 | 当前粉丝数 |
-| 粉丝日增量 | 数字 | 与昨天的差值 |
-| 粉丝周增量 | 数字 | 与上周的差值 |
-| 粉丝增长率(%) | 数字 | 日增长率 |
-| 竞品排名 | 数字 | 在同组中的排名 |
-| 异常标记 | 复选框 | 是否触发 3σ 异常检测 |
-
-### 表 2：笔记数据明细（note_metrics）
-
-每行一篇笔记，包含互动数据和日增量。
-
-### 表 3：每日快照（daily_snapshot）
-
-每行 = 账号 × 日期。记录时间序列数据，用于趋势计算。
-
-### 表 4：竞品对比（competitor_comparison）
-
-每行一个竞品账号，含排名和多维度对比指标。
+| 表名 | 用途 | 关键字段 |
+|------|------|---------|
+| **账号概览** | 每账号一行，当前指标 + 趋势 | 粉丝数/日增量/周增量/增长率/异常标记 |
+| **笔记数据明细** | 每笔记一行，互动数据 | 浏览量/点赞/收藏/评论/分享/日增量 |
+| **每日快照** | 账号 × 日期时间序列 | 每日粉丝/关注/获赞/笔记数/互动总量 |
+| **竞品对比** | 横向排名 + 多维度对比 | 排名/粉丝/互动率/平均笔记互动量 |
 
 ---
 
 ## 架构概览
 
 ```
-配置层 (YAML + pydantic + .env)
-    │
-    ▼
-采集层 ─── CSV导入 / Browser(Playwright/CDP) / API(未来)
-    │
-    ▼
-转换层 ─── 数据标准化 / 趋势计算(DoD/WoW) / 竞品排名
-    │
-    ▼
-存储层 ─── SQLite (本地历史) ──► 飞书 Bitable (4张表)
-    │
-    ▼
-通知层 ─── 飞书 Bot (日报卡片 / 失败告警)
-    │
-    ▼
-调度层 ─── APScheduler (每日定时 / CLI手动触发)
+Chrome CDP (端口 9222)
+  ├─ personal_info        → 粉丝/关注/获赞
+  ├─ note/analyze/list    → 单篇笔记互动数据
+  └─ note_detail_new      → 7/30天聚合趋势
+       │
+  CSV 文件 (历史补充)
+       │
+       ▼
+  Hybrid 合并 (浏览器优先 + CSV 去重)
+       │
+       ▼
+  数据标准化 → 趋势计算(DoD/WoW/3σ) → 竞品排名
+       │
+       ▼
+  SQLite (本地持久化) → 飞书多维表格 (4张表)
+       │
+       ▼
+  飞书 Bot 通知 (日报摘要 / 错误告警)
 ```
 
 ### 核心模块
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
-| 配置 | `src/core/config.py` | pydantic 配置验证 + YAML + .env 加载 |
-| CSV 采集 | `src/collectors/csv_import.py` | 解析创作者中心导出的 CSV |
-| 浏览器采集 | `src/collectors/xhs_browser.py` | Playwright CDP 自动化采集（待验证）|
-| 标准化 | `src/transformers/normalizer.py` | 中文数字、类型转换、异常值处理 |
-| 趋势计算 | `src/transformers/trend_calculator.py` | 日环/周环、增长率、3σ 异常 |
-| 竞品分析 | `src/transformers/competitor.py` | 排名计算、横向对比 |
+| 配置 | `src/core/config.py` | pydantic 验证 + YAML + .env |
+| 浏览器采集 | `src/collectors/xhs_browser.py` | CDP 直连 + API 拦截 + 解析 |
+| CSV 采集 | `src/collectors/csv_import.py` | CSV/Excel 文件导入 |
+| 采集工厂 | `src/collectors/factory.py` | 策略模式：browser/api/hybrid/csv |
+| 标准化 | `src/transformers/normalizer.py` | 中文数字、类型转换 |
+| 趋势计算 | `src/transformers/trend_calculator.py` | DoD/WoW/3σ 异常检测 |
+| 竞品分析 | `src/transformers/competitor.py` | 排名、横向对比 |
 | 飞书客户端 | `src/loaders/bitable_client.py` | Token 管理、CRUD、重试 |
-| 同步引擎 | `src/loaders/sync_engine.py` | Diff 增量、批量 Upsert、幂等 |
+| 同步引擎 | `src/loaders/sync_engine.py` | Diff 增量、批量 Upsert |
 | 调度器 | `src/scheduler/jobs.py` | APScheduler 定时任务 |
 | Bot 通知 | `src/notifiers/feishu_bot.py` | 飞书消息卡片 |
 | CLI | `src/cli/main.py` | Click 命令行入口 |
 
 ---
 
-## 定时运行
-
-### 方案A：APScheduler 常驻进程
-
-```bash
-xhs-feishu start
-```
-
-进程常驻后台（终端保持打开）。适合开发/测试环境。
-
-### 方案B：Windows 任务计划程序
-
-1. 打开 **任务计划程序**（Task Scheduler）
-2. 创建基本任务 → 触发器：**每天 8:00**
-3. 操作 → 启动程序：
-   - 程序：`C:\Users\<用户名>\AppData\Local\Programs\Python\Python311\python.exe`
-   - 参数：`-m src.cli.main run`
-   - 起始于：`C:\path\to\xhs-feishu-sync`
-
-### 方案C：GitHub Actions（未来）
-
-使用 GitHub Actions 的 `schedule` 触发器每日运行（需配置浏览器/CSV 自动化环境）。
-
----
-
 ## 故障排查
 
-### `xhs-feishu` 命令找不到
+### Chrome CDP 连接失败
 
-```bash
-pip install -e .     # 重新安装
+```
+无法连接到 Chrome CDP (http://localhost:9222)
 ```
 
-### `ModuleNotFoundError`
-
-```bash
-# 确保在项目根目录下运行
-cd xhs-feishu-sync
-```
+1. 先运行 `scripts\start_chrome.bat`
+2. 确认 Chrome 已启动且端口 9222 有响应
+3. 检查 `config/settings.yaml` 中 `cdp_endpoint` 配置
 
 ### 飞书 Token 获取失败
 
 ```
-✗ 获取飞书 tenant_access_token 失败: code=...
+✗ 获取飞书 tenant_access_token 失败
 ```
 
-检查 `.env` 中的 `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET` 是否正确。
+检查 `.env` 中的 `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET`。
 
 ### 飞书写入权限 91403 Forbidden
 
-1. 检查应用是否已发布（开发者后台 → 应用发布 → 发布）
-2. 在多维表格中：`...` → `添加文档应用` → 搜索并添加你的应用
-3. 确认权限 scope 包含 `bitable:app`
+1. 确认应用已发布（飞书开放平台 → 应用发布）
+2. 在多维表格中：`...` → `添加文档应用` → 添加你的应用
+3. 确认权限包含 `bitable:app`
 
-### 字段写入失败 FieldNameNotFound
+### 字段写入失败
 
-运行一次 `xhs-feishu setup` 确保所有字段已创建。
+运行 `xhs-feishu setup` 重新创建字段（幂等，不会重复建表）。
 
-### CSV 文件找不到
+### 笔记数据为空
 
-确保文件路径为：`data/csv_imports/<account_id>/YYYY-MM-DD_export.csv`
-
-其中 `<account_id>` 对应 `accounts.yaml` 中的 `account_id` 字段。
-
-### 中文显示乱码（Windows Terminal）
-
-在终端设置中将编码改为 UTF-8，或使用 Windows Terminal（非 cmd.exe）。
+1. 检查浏览器是否已登录 `creator.xiaohongshu.com`
+2. 尝试 `xhs-feishu test-collect` 看具体失败原因
+3. Hybrid 模式下会降级到 CSV，确认 `data/csv_imports/` 下有文件
 
 ---
 
@@ -433,47 +305,27 @@ cd xhs-feishu-sync
 
 ```
 xhs-feishu-sync/
-├── pyproject.toml              # 项目元数据 + 依赖
-├── .env.example                # 环境变量模板
+├── pyproject.toml
+├── .env.example
 ├── README.md
+├── CLAUDE.md                  # AI 助手指引
 ├── config/
-│   ├── settings.yaml           # 主配置
-│   ├── accounts.yaml           # 监控账号列表
-│   └── bitable_schema.yaml    # 飞书表/字段定义
+│   ├── settings.yaml
+│   ├── accounts.yaml
+│   └── bitable_schema.yaml
 ├── src/
-│   ├── cli/main.py             # CLI 入口
-│   ├── core/                   # 配置、异常、日志
-│   ├── collectors/             # 数据采集层
-│   ├── transformers/           # 数据转换层
-│   ├── storage/                # SQLite 存储
-│   ├── loaders/                # 飞书同步
-│   ├── notifiers/              # Bot 通知
-│   └── scheduler/              # 定时任务
-├── scripts/                    # 辅助脚本
-├── data/                       # 数据文件（CSV、SQLite）
-├── logs/                       # 日志文件
-├── docs/                       # 设计文档
-│   ├── requirements.md
-│   ├── architecture.md
-│   ├── design-standards.md
-│   ├── implementation-plan.md
-│   └── api-reference.md
-├── devlog/                     # 开发日志
-└── tests/                      # 测试
-```
-
-### 开发命令
-
-```bash
-# 代码检查
-pip install -e ".[dev]"
-ruff check src/
-
-# 类型检查
-mypy src/
-
-# 运行测试
-pytest
+│   ├── cli/main.py
+│   ├── core/                  # 配置、异常、日志
+│   ├── collectors/            # 数据采集层
+│   ├── transformers/          # 数据转换层
+│   ├── storage/               # SQLite 持久化
+│   ├── loaders/               # 飞书同步
+│   ├── notifiers/             # Bot 通知
+│   └── scheduler/             # APScheduler 定时
+├── scripts/                   # setup.bat / start_chrome.bat / daily_run.bat
+├── data/                      # CSV 导入 + SQLite 数据库
+├── docs/                      # 设计文档
+└── devlog/                    # 开发日志
 ```
 
 ### 文档索引
@@ -486,15 +338,6 @@ pytest
 | [执行计划](docs/implementation-plan.md) | 分阶段任务、进度追踪 |
 | [API 参考](docs/api-reference.md) | 飞书 API、内部接口 |
 | [开发日志](devlog/) | 每日记录 |
-
-### 运行验证脚本
-
-```bash
-python scripts/verify_trend_competitor.py    # 趋势 + 竞品模块验证（26项）
-python scripts/verify_scheduler.py            # 调度器验证（15项）
-```
-
----
 
 ## License
 
