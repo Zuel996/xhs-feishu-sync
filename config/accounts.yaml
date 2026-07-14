@@ -2,16 +2,16 @@
 # 分为自有账号和竞品账号两类
 
 own_accounts:
-  - account_id: "test_brand"
-    xhs_user_id: "66765d460000000003033e11"
-    xhs_username: "测试品牌号"
-    display_name: "LingoAce"
+  # 替换为你的小红书账号信息
+  # account_id: 唯一标识，用于 CSV 导入目录名
+  # xhs_user_id: 小红书用户 ID（从个人主页 URL 获取）
+  # xhs_username: 小红书用户名
+  # display_name: 在飞书表格中显示的名称
+  - account_id: "your_account"
+    xhs_user_id: "请填写你的小红书用户ID"
+    xhs_username: "请填写用户名"
+    display_name: "请填写显示名称"
     competitor: false
-    # 以下为手动配置的账号基线数据（Excel导出不含此数据时的fallback）
-    # follower_count: 0
-    # following_count: 0
-    # total_likes: 0
-    # total_collections: 0
 
 competitor_accounts: []
   # 示例:
