@@ -122,15 +122,25 @@ own_accounts:
 
 每天跑一次即可获取实时数据：
 
-```batch
-# 1. 启动 Chrome 调试模式（一次，保持运行）
-scripts\start_chrome.bat
+**① 启动 Chrome 调试模式**
 
-# 2. 在浏览器中确认已登录 creator.xiaohongshu.com
+Win+R 打开运行，粘贴以下命令并回车：
 
-# 3. 执行采集同步
+```
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="%USERPROFILE%\chrome-debug-profile" https://creator.xiaohongshu.com
+```
+
+在打开的浏览器中确认已登录创作者中心。**这个窗口不要关。**
+
+> 提示：可以把这行命令保存为桌面快捷方式，每次双击即可。如果 Chrome 装在别的位置，脚本 `scripts\start_chrome.bat` 会自动检测路径。
+
+**② 执行采集同步**
+
+```powershell
 xhs-feishu run
 ```
+
+**③ 打开飞书多维表格查看最新数据**
 
 浏览器模式自动从创作者中心 API 采集：
 - **账号数据**：粉丝、关注、获赞（`personal_info` API）
@@ -154,13 +164,18 @@ Hybrid 模式下：浏览器数据优先（含实时互动指标），CSV 补充
 
 ### Windows 任务计划程序
 
-1. 确保 `start_chrome.bat` 已运行（Chrome 保持登录）
+1. 确保 Chrome 调试窗口保持运行（可最小化）
 2. 打开 **任务计划程序**（taskschd.msc）
 3. 创建基本任务：
    - 触发器：**每天 09:00**
    - 操作 → 启动程序：`C:\你的路径\xhs-feishu-sync\scripts\daily_run.bat`
 
 `daily_run.bat` 会自动检查 Chrome CDP 是否存活，然后执行 `xhs-feishu run`。
+
+**Chrome 开机自启（可选）：** 再创建一个任务，触发器设为「计算机启动时」，操作填 Chrome 启动命令：
+```
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="%USERPROFILE%\chrome-debug-profile" https://creator.xiaohongshu.com
+```
 
 ### APScheduler 常驻进程（备选）
 
@@ -183,6 +198,23 @@ xhs-feishu start
 | `xhs-feishu run --date 2026-07-10` | 指定日期采集 |
 | `xhs-feishu start` | 启动定时调度器 |
 | `xhs-feishu status` | 查看最近同步状态 |
+| `xhs-feishu clear` | 清理指定账号数据（见下方） |
+
+---
+
+## 清理数据
+
+删除指定账号在飞书表格和本地数据库中的全部数据：
+
+```powershell
+# 先预览（安全，不真正删除）
+xhs-feishu clear --account 账号名
+
+# 确认无误后，执行删除
+xhs-feishu clear --account 账号名 --confirm
+```
+
+可同时指定多个账号：`--account acc1 --account acc2`。带 `--keep-local` 保留本地 SQLite，仅清理飞书。
 
 ---
 
