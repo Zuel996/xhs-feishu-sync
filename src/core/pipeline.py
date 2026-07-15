@@ -330,3 +330,149 @@ async def run_pipeline(
         return await runner.run_all_accounts(source=source)
     finally:
         await runner.close()
+
+
+async def run_pipeline_from_dict(
+    account_id: str,
+    profile_data: Optional[dict] = None,
+    notes_data: Optional[list[dict]] = None,
+    feishu_config=None,
+) -> dict:
+    """从原始 dict 数据运行 Pipeline（用于 HTTP API / Chrome 插件）。
+
+    跳过 Collector 采集步骤，直接使用 Chrome 插件拦截的数据。
+
+    Args:
+        account_id: 账号 ID
+        profile_data: 账号 Profile 字典（可包含 follower_count 等），可选
+        notes_data: 笔记列表，每项为 dict（对应 NoteMetrics 字段），可选
+        feishu_config: FeishuConfig 实例（从 API 传入，不读 .env）
+
+    Returns:
+        {"notes_synced": N, "profile_synced": bool}
+    """
+    from datetime import date as date_type
+
+    from src.collectors.models import AccountProfile, CollectResult, NoteMetrics
+    from src.loaders.bitable_client import BitableClient
+    from src.loaders.sync_engine import SyncEngine
+    from src.storage.models import AccountSnapshot, NoteInfo, NoteSnapshot
+    from src.storage.sqlite import (
+        AccountSnapshotRepo,
+        Database,
+        NoteInfoRepo,
+        NoteSnapshotRepo,
+        SyncStateRepo,
+        get_db,
+    )
+    from src.transformers.normalizer import normalize_collect_result, validate_account_profile
+    from src.transformers.trend_calculator import NoteTrends, TrendCalculator
+
+    notes_data = notes_data or []
+    snapshot_date = date_type.today()
+
+    # ── 1. 构建 CollectResult ──
+    profile = None
+    if profile_data:
+        profile = AccountProfile(**profile_data)
+
+    notes: list[NoteMetrics] = []
+    for nd in notes_data:
+        # 解析 ISO 日期字符串
+        pub_date = nd.pop("publish_date", None)
+        if isinstance(pub_date, str) and pub_date:
+            nd["publish_date"] = date_type.fromisoformat(pub_date)
+        elif pub_date is None:
+            nd["publish_date"] = None
+        notes.append(NoteMetrics(**nd))
+
+    collect_result = CollectResult(
+        account_id=account_id,
+        profile=profile,
+        notes=notes,
+        errors=[],
+    )
+
+    if profile:
+        for w in validate_account_profile(profile):
+            logger.warning(w)
+
+    # ── 2. 标准化 ──
+    account_snapshots, note_infos, note_snapshots = normalize_collect_result(
+        collect_result, snapshot_date
+    )
+
+    if not account_snapshots:
+        return {"profile_synced": False, "notes_synced": 0}
+
+    primary_snapshot = max(account_snapshots, key=lambda s: s.snapshot_date)
+
+    # ── 3. SQLite 存储 + 趋势计算 ──
+    db = get_db()
+    trend_calc = TrendCalculator(history_days=30)
+
+    with db.session() as session:
+        account_repo = AccountSnapshotRepo(session)
+        for snap in account_snapshots:
+            account_repo.save(snap)
+
+        note_info_repo = NoteInfoRepo(session)
+        for info in note_infos:
+            note_info_repo.save(info)
+
+        note_repo = NoteSnapshotRepo(session)
+        for snap in note_snapshots:
+            note_repo.save(snap)
+
+        # 趋势
+        prev_snapshot = account_repo.get_previous(account_id, snapshot_date, offset_days=1)
+        week_ago_snapshot = account_repo.get_previous(account_id, snapshot_date, offset_days=7)
+        history = account_repo.get_history(account_id, days=30)
+        trends = trend_calc.calculate_account_trends(
+            primary_snapshot, prev_snapshot, week_ago_snapshot, history
+        )
+
+        note_trends_map: dict[str, NoteTrends] = {}
+        for snap in note_snapshots:
+            prev_note = note_repo.get_previous(snap.note_id, snapshot_date, offset_days=1)
+            week_note = note_repo.get_previous(snap.note_id, snapshot_date, offset_days=7)
+            note_trends_map[snap.note_id] = trend_calc.calculate_note_trends(
+                snap, prev_note, week_note
+            )
+
+        # ── 4. 飞书同步 ──
+        notes_synced = 0
+        profile_synced = False
+
+        try:
+            bitable_client = BitableClient(feishu_config)
+            sync_engine = SyncEngine(client=bitable_client)
+
+            if sync_engine.enabled:
+                sync_results = sync_engine.sync_full_pipeline(
+                    account_snapshot=primary_snapshot,
+                    note_infos=note_infos,
+                    note_snapshots=note_snapshots,
+                    trends=trends,
+                    note_trends_map=note_trends_map,
+                )
+                for snap in account_snapshots:
+                    sync_engine.sync_daily_snapshot(snap)
+
+                notes_synced = sync_results.get("note_metrics", 0)
+                profile_synced = True
+            else:
+                logger.warning("SyncEngine 未启用（离线模式），跳过飞书同步")
+        except Exception as e:
+            logger.exception("飞书同步失败")
+            raise
+
+        # ── 5. 更新同步状态 ──
+        sync_repo = SyncStateRepo(session)
+        sync_repo.update(account_id, status="success", snapshot_date=snapshot_date)
+        session.commit()
+
+    return {
+        "profile_synced": profile_synced,
+        "notes_synced": notes_synced,
+    }

@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "xhs-feishu-sync",
+  "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvzZCjsWjlhuRcUd0u09QXmFtzLW1NuelAjw/6qYyyaRYSlU6+YnqXRfXS/S3yedAM4siqfs9bkWqSoE42CiVfj64BxRKNGdkabBlJI1ZcvP28gRMGfvwufcS4/1sjS7SgV9XMnwgr1m532aaWBfrWPKl1cw1w8ie2fFjS1qxE213QVWdTF0XZV3KlvCx9cKaQoeoL7mdnwvEQN5GDDdWYBA4aGN1wtGbhiFhoq+QZ5tYCfrD+VxNnAnR1YWdAgKlQQQ8ZkPs0X00A0pBUCLar+QS5TitfjmMKlh6MSWij1mP/YncqtGM76T/aiDoVyY7OzYmHcBnraOhRrZkQRe3/QIDAQAB",
+  "description": "自动采集小红书创作者中心数据，同步到飞书多维表格",
+  "permissions": ["storage", "activeTab", "alarms", "notifications"],
+  "host_permissions": [
+    "*://creator.xiaohongshu.com/*",
+    "http://localhost:9527/*"
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "xhs-feishu-sync"
+  },
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://creator.xiaohongshu.com/*"],
+      "js": ["content/xhs-interceptor.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

@@ -27,6 +27,10 @@ dependencies = [
     "python-dotenv>=1.0",
     "tenacity>=9.0",
     "openpyxl>=3.1",
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "pystray>=0.19",
+    "Pillow>=10.0",
 ]
 
 classifiers = [
@@ -62,6 +66,7 @@ dev = [
 
 [project.scripts]
 xhs-feishu = "src.cli.main:cli"
+xhs-feishu-server = "src.api.server:start"
 
 [tool.setuptools.packages.find]
 include = ["src*"]

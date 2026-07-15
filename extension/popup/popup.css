@@ -1,0 +1,203 @@
+/* ── Reset ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  width: 360px;
+  min-height: 480px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  color: #1f2329;
+  background: #f5f6f7;
+}
+
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* ── Header ── */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, #ff2e4c, #e51f3a);
+  color: #fff;
+}
+.header .logo { font-size: 22px; }
+.header h1 { font-size: 15px; font-weight: 700; flex: 1; }
+.header .version { font-size: 11px; opacity: 0.75; }
+
+/* ── Status Bar ── */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: #fff;
+  border-bottom: 1px solid #e5e6eb;
+  font-size: 12px;
+}
+.dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #c9cdd4;
+  flex-shrink: 0;
+}
+.dot.online { background: #00b42a; }
+.dot.offline { background: #f53f3f; }
+
+/* ── Sections ── */
+.section {
+  background: #fff;
+  border-bottom: 1px solid #e5e6eb;
+}
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  cursor: pointer;
+  user-select: none;
+}
+.section-header:hover { background: #f7f8fa; }
+.section-header h2 { font-size: 13px; font-weight: 600; }
+.section-header .toggle { font-size: 10px; color: #86909c; transition: transform 0.2s; }
+.section-header.collapsed .toggle { transform: rotate(-90deg); }
+
+.section-body {
+  padding: 0 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.section-body.collapsed { display: none; }
+
+/* ── Form ── */
+label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: #4e5969;
+}
+label input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 7px 10px;
+  border: 1px solid #e5e6eb;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+label input:focus { border-color: #165dff; box-shadow: 0 0 0 2px rgba(22,93,255,0.1); }
+
+/* Password toggle */
+label { position: relative; }
+.toggle-pw {
+  position: absolute;
+  right: 4px;
+  top: 26px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+}
+
+/* ── Buttons ── */
+.btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: #165dff; color: #fff; }
+.btn-primary:hover:not(:disabled) { background: #0e42d2; }
+.btn-collect {
+  width: 100%;
+  padding: 12px;
+  background: linear-gradient(135deg, #ff2e4c, #e51f3a);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+}
+.btn-collect:hover:not(:disabled) { background: linear-gradient(135deg, #e51f3a, #cc1a30); }
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 12px;
+  background: #f2f3f5;
+  color: #4e5969;
+}
+.btn-sm:hover:not(:disabled) { background: #e5e6eb; }
+.btn-row { display: flex; gap: 8px; }
+
+/* ── Messages ── */
+.msg {
+  font-size: 12px;
+  padding: 4px 0;
+  min-height: 18px;
+}
+.msg.success { color: #00b42a; }
+.msg.error { color: #f53f3f; }
+.msg.info { color: #165dff; }
+
+/* ── Account List ── */
+#accountList { display: flex; flex-direction: column; gap: 6px; }
+.account-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #f7f8fa;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.account-item .info { flex: 1; min-width: 0; }
+.account-item .id { font-weight: 600; }
+.account-item .xhs { color: #86909c; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-item .remove {
+  background: none;
+  border: none;
+  color: #f53f3f;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0 4px;
+  line-height: 1;
+}
+.empty-hint { color: #c9cdd4; text-align: center; padding: 12px 0; font-size: 12px; }
+
+/* ── Add Account ── */
+.add-account {
+  display: flex;
+  gap: 6px;
+  padding-top: 4px;
+}
+.add-account input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid #e5e6eb;
+  border-radius: 6px;
+  font-size: 12px;
+  outline: none;
+}
+.add-account input:focus { border-color: #165dff; }
+.add-account .btn { flex-shrink: 0; }
+
+/* ── Actions ── */
+.actions { padding: 16px !important; background: transparent !important; border: none !important; }
+
+/* ── Footer ── */
+.footer {
+  padding: 8px 16px;
+  text-align: center;
+  font-size: 11px;
+  color: #c9cdd4;
+}

@@ -1,0 +1,213 @@
+"""HTTP API 服务 — FastAPI 应用。
+
+为 Chrome 插件提供 REST API：
+  POST /config   — 配置飞书凭证（验证连接）
+  POST /collect  — 提交采集数据，触发 Pipeline
+  GET  /status   — 查看最近采集状态
+  GET  /health   — 后端健康检查
+
+启动:
+  python -m src.api.server
+  xhs-feishu-server
+"""
+
+import asyncio
+import logging
+from datetime import date, datetime
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+from src.core.config import FeishuConfig
+from src.core.pipeline import run_pipeline_from_dict
+from src.loaders.bitable_client import BitableClient
+
+logger = logging.getLogger(__name__)
+
+# ── 全局状态 ──
+_feishu_config: Optional[FeishuConfig] = None
+_last_status: dict = {
+    "last_run": None,
+    "status": "idle",
+    "accounts_processed": 0,
+    "notes_synced": 0,
+    "errors": [],
+}
+
+# ── FastAPI 应用 ──
+app = FastAPI(
+    title="xhs-feishu-sync",
+    version="0.1.0",
+    description="小红书 → 飞书多维表格 数据同步后端",
+)
+
+# CORS：允许 Chrome 插件从任何 origin 调用 localhost
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ═══════════════════════════════════════════════════
+# 请求模型
+# ═══════════════════════════════════════════════════
+
+class FeishuConfigRequest(BaseModel):
+    """飞书凭证配置请求。"""
+    app_id: str = Field(description="飞书应用 App ID")
+    app_secret: str = Field(description="飞书应用 App Secret")
+    bitable_app_token: str = Field(description="飞书多维表格 App Token")
+    bot_webhook_url: str = Field(default="", description="Bot Webhook（可选）")
+
+
+class ProfileData(BaseModel):
+    """账号 Profile 数据。"""
+    account_id: str
+    xhs_user_id: str
+    username: str
+    display_name: str = ""
+    follower_count: int = Field(default=0, ge=0)
+    following_count: int = Field(default=0, ge=0)
+    total_likes: int = Field(default=0, ge=0)
+    total_collections: int = Field(default=0, ge=0)
+    competitor: bool = False
+
+
+class NoteData(BaseModel):
+    """单篇笔记数据。"""
+    note_id: str = Field(description="小红书笔记 ID")
+    account_id: str = Field(description="所属账号 ID")
+    title: str = ""
+    note_type: str = "image"
+    publish_date: Optional[str] = Field(default=None, description="发布日期 (ISO 格式)")
+    url: str = ""
+    views: int = Field(default=0, ge=0)
+    likes: int = Field(default=0, ge=0)
+    favorites: int = Field(default=0, ge=0)
+    comments: int = Field(default=0, ge=0)
+    shares: int = Field(default=0, ge=0)
+    impressions: int = Field(default=0, ge=0)
+    ctr: float = Field(default=0.0, ge=0)
+    new_followers: int = Field(default=0, ge=0)
+    avg_watch_time: float = Field(default=0.0, ge=0)
+    danmaku: int = Field(default=0, ge=0)
+    sort_order: int = Field(default=0, ge=0)
+
+
+class CollectRequest(BaseModel):
+    """采集数据提交请求。"""
+    account_id: str = Field(description="账号 ID")
+    profile: Optional[ProfileData] = Field(default=None, description="账号 Profile 数据")
+    notes: list[NoteData] = Field(default_factory=list, description="笔记列表")
+
+
+# ═══════════════════════════════════════════════════
+# API 端点
+# ═══════════════════════════════════════════════════
+
+@app.post("/config")
+async def set_config(config: FeishuConfigRequest):
+    """配置飞书凭证并验证连接。"""
+    global _feishu_config
+
+    cfg = FeishuConfig(
+        app_id=config.app_id,
+        app_secret=config.app_secret,
+        bitable_app_token=config.bitable_app_token,
+        bot_webhook_url=config.bot_webhook_url,
+    )
+
+    # 立即验证：尝试获取 tenant_access_token
+    try:
+        client = BitableClient(cfg)
+        token = client.ensure_token()
+        _feishu_config = cfg
+        return {
+            "status": "ok",
+            "token_prefix": token[:10] + "...",
+            "message": "飞书连接成功",
+        }
+    except Exception as e:
+        _feishu_config = None
+        raise HTTPException(
+            status_code=400,
+            detail=f"飞书连接失败: {e}",
+        )
+
+
+@app.post("/collect")
+async def collect(request: CollectRequest):
+    """提交采集数据，触发 Pipeline 处理。"""
+    global _feishu_config, _last_status
+
+    if _feishu_config is None:
+        raise HTTPException(
+            status_code=400,
+            detail="请先配置飞书凭证: POST /config",
+        )
+
+    try:
+        result = await run_pipeline_from_dict(
+            account_id=request.account_id,
+            profile_data=request.profile.model_dump() if request.profile else None,
+            notes_data=[n.model_dump() for n in request.notes],
+            feishu_config=_feishu_config,
+        )
+
+        _last_status = {
+            "last_run": date.today().isoformat(),
+            "status": "success",
+            "accounts_processed": 1,
+            "notes_synced": result.get("notes_synced", 0),
+            "errors": [],
+        }
+        return _last_status
+
+    except Exception as e:
+        _last_status = {
+            "last_run": date.today().isoformat(),
+            "status": "failed",
+            "errors": [str(e)],
+        }
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/status")
+async def get_status():
+    """获取最近一次采集状态。"""
+    global _last_status
+    config_ok = _feishu_config is not None
+    return {
+        **_last_status,
+        "feishu_configured": config_ok,
+    }
+
+
+@app.get("/health")
+async def health():
+    """健康检查。"""
+    global _feishu_config
+    return {
+        "status": "ok",
+        "feishu_configured": _feishu_config is not None,
+    }
+
+
+def start():
+    """启动 API 服务器（uvicorn）。"""
+    import uvicorn
+
+    uvicorn.run(
+        "src.api.server:app",
+        host="127.0.0.1",
+        port=9527,
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    start()

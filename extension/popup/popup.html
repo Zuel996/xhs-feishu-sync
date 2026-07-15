@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>xhs-feishu-sync</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <span class="logo">🔴</span>
+      <h1>xhs-feishu-sync</h1>
+      <span class="version">v0.1.0</span>
+    </div>
+
+    <!-- Backend Status -->
+    <div class="status-bar" id="statusBar">
+      <span class="dot" id="backendDot"></span>
+      <span id="backendStatus">检测后端...</span>
+    </div>
+
+    <!-- Feishu Config Section -->
+    <section class="section">
+      <div class="section-header" id="feishuHeader">
+        <h2>📋 飞书配置</h2>
+        <span class="toggle" id="feishuToggle">▼</span>
+      </div>
+      <div class="section-body" id="feishuBody">
+        <label>
+          App ID
+          <input type="text" id="appId" placeholder="cli_xxxxxxxxxxxx" autocomplete="off">
+        </label>
+        <label>
+          App Secret
+          <input type="password" id="appSecret" placeholder="••••••••••••••••" autocomplete="off">
+          <button type="button" class="toggle-pw" id="toggleSecret">👁</button>
+        </label>
+        <label>
+          Bitable Token
+          <input type="text" id="bitableToken" placeholder="从多维表格 URL 提取" autocomplete="off">
+        </label>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btnVerify">🔗 验证并保存</button>
+        </div>
+        <div class="msg" id="feishuMsg"></div>
+      </div>
+    </section>
+
+    <!-- Accounts Section -->
+    <section class="section">
+      <div class="section-header" id="accountsHeader">
+        <h2>👤 监控账号</h2>
+        <span class="toggle" id="accountsToggle">▼</span>
+      </div>
+      <div class="section-body" id="accountsBody">
+        <div id="accountList">
+          <div class="empty-hint">暂无账号，请添加</div>
+        </div>
+        <div class="add-account">
+          <input type="text" id="newAccountId" placeholder="账号ID（如 my_brand）">
+          <input type="text" id="newXhsUserId" placeholder="XHS用户ID（32位）">
+          <button class="btn btn-sm" id="btnAddAccount">+ 添加</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Actions -->
+    <section class="section actions">
+      <button class="btn btn-collect" id="btnCollect">🚀 开始</button>
+      <div class="msg" id="collectMsg"></div>
+    </section>
+
+    <!-- Footer -->
+    <div class="footer">
+      <span id="lastRun">尚未采集</span>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

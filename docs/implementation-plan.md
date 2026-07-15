@@ -11,8 +11,9 @@
 | 4 | **飞书同步** | Week 5-6 | ✅ 已验证 | 🟢 低 |
 | 5 | **调度与通知** | Week 6-7 | ✅ 已验证 | 🟢 低 |
 | 6 | **集成测试** | Week 7-8 | ✅ 全部通过 | 🟢 低 |
+| 7 | **Chrome Extension + 安装包** | Week 9 | ✅ v0.1.0 发布 | 🟢 低 |
 
-> **当前状态**: Phase 1-6 全部完成 ✅。线路 A（CSV 离线模式）、线路 B（飞书集成）、线路 C（CDP 浏览器采集）全部验证通过。浏览器自动采集创作者中心 API 笔记数据，Hybrid 合并策略（浏览器优先 + CSV 去重补充）已就绪。已修复 19 个 Bug，代码已推送至 GitHub。剩余：Bot 通知验证 + README 编写。
+> **当前状态**: Phase 1-7 全部完成 ✅。线路 A（CSV 离线模式）、线路 B（飞书集成）、线路 C（CDP 浏览器采集）全部验证通过。Chrome Extension (MV3) + Windows 一键安装包实现用户愿景：「下载 → 安装 → 填凭证 → 点开始 → 数据到飞书」。分发包 `dist/xhs-feishu-sync-v0.1.0.zip` (58MB)。已修复 21 个 Bug，代码已推送至 GitHub。剩余：团队内部测试 + Bot 通知验证。
 
 ---
 
@@ -190,6 +191,120 @@
 
 ---
 
+## Phase 7: Chrome Extension + 一键安装包 ✅ (2026-07-15)
+
+### 目标
+实现用户愿景：「下载一个东西 → 打开 → 在一个界面里填入小红书 ID、飞书凭证 → 点"开始" → 数据自动出现在飞书表格里。不需要碰命令行、不需要编辑配置文件、不需要手动启动 Chrome 调试模式。」
+
+### 决策记录
+
+| 决策项 | 选择 | 理由 |
+|--------|------|------|
+| 产品形态 | **Chrome Extension + 安装包** | Phase 1-4 插件已完成，只需解决打包分发，3-5x 少于 Electron |
+| 采集触发 | **两者都要**：每天自动 + 手动"开始"按钮 | 日常自动化，特殊情况手动补采 |
+| 发布方式 | **本地安装包** (.exe + .bat) | 不上架 Chrome 商店，团队内部使用 |
+| XHS 登录 | **自动打开 XHS 页面** | 点击"开始"→ 自动打开 creator.xiaohongshu.com → 采集 → 通知 |
+| 后端打包 | **`--onedir`** 而非 `--onefile` | 启动更快，无每次解压开销 |
+| 扩展安装 | **注册表策略** 而非 Chrome Web Store | 团队内部使用，无需审核 |
+
+### 架构概览
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Chrome Extension (MV3)                                  │
+│  ┌──────────┐  ┌──────────────┐  ┌───────────────────┐  │
+│  │  Popup   │  │ Service      │  │ Content Script    │  │
+│  │  配置UI  │──│ Worker       │──│ XHS API 拦截器    │  │
+│  │  开始按钮│  │ 消息中转     │  │ hook fetch/XHR    │  │
+│  └──────────┘  │ 定时采集     │  └───────────────────┘  │
+│                │ 轮询+超时    │                          │
+│                └──────────────┘                          │
+│                       │ fetch (localhost:9527)            │
+└───────────────────────┼─────────────────────────────────┘
+                        │
+┌───────────────────────┼─────────────────────────────────┐
+│  Python Backend        ▼                                  │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │  FastAPI Server (:9527)                             │  │
+│  │  /config  /collect  /status  /health                 │  │
+│  │  Pipeline: Collect → Transform → Store → Feishu      │  │
+│  └────────────────────────────────────────────────────┘  │
+│  ┌──────────────────┐                                   │
+│  │  System Tray     │  pystray — 后台静默运行           │
+│  │  开机自启        │  注册表 HKCU\Run                 │
+│  └──────────────────┘                                   │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Step 7.1: PyInstaller 打包 ✅
+- [x] `run_server.py` — PyInstaller 入口，整合系统托盘
+- [x] `xhs-feishu-server.spec` — noconsole 配置（hidden imports: src.api, pystray, PIL）
+- [x] `xhs-feishu-server-debug.spec` — console 调试版
+- [x] 产物：`dist/xhs-feishu-server/` (~111MB)，含 `xhs-feishu-server.exe` + `_internal/`
+
+### Step 7.2: 系统托盘 + 静默运行 ✅
+- [x] `pystray` 系统托盘图标（红色圆角矩形 + 白色"S"字）
+- [x] 右键菜单：查看状态（打开健康页）/ 退出
+- [x] uvicorn daemon 线程 + main thread 消息泵
+- [x] 依赖：`pystray>=0.19`、`Pillow>=10.0`
+
+### Step 7.3: "开始"按钮 — 一键采集 ✅
+- [x] Service Worker `handleCollect()` — 全流程：检查后端 → 配置 → 打开 XHS → 轮询 → 匹配 → 同步 → 通知
+- [x] `waitForData()` — 每 2s 轮询 Content Script，45s timeout，匹配 xhs_user_id
+- [x] Popup 状态提示链：检查中... → 连接后端... → 采集中...（最长45秒）→ ✅/⚠️/❌
+- [x] 错误处理：后端离线、无账号、无数据匹配、同步失败
+- [x] 采集结果写入 `chrome.storage.local`，Popup 优先读取 storage 显示历史
+
+### Step 7.4: Windows 一键安装器 ✅
+- [x] `scripts/install.bat` — 5 步自动化安装：
+  1. robocopy → `%LOCALAPPDATA%\xhs-feishu-sync`
+  2. 注册表 `HKCU\Run` 开机自启
+  3. PowerShell COM 创建开始菜单快捷方式
+  4. `HKLM\ExtensionInstallForcelist` 注册 Chrome 扩展策略
+  5. 启动后端服务 + 打开 `chrome://extensions/`
+- [x] `scripts/package.bat` — 构建分发包（robocopy + Compress-Archive）
+- [x] 分发产物：`dist/xhs-feishu-sync-v0.1.0.zip` (~58MB)
+
+### Step 7.5: 定时自动采集 ✅
+- [x] `chrome.alarms` 每日定时（默认 10:00），`onInstalled` 时计算首次延迟
+- [x] `onStartup` 更新定时信息
+- [x] `scheduleInfo` 写入 `chrome.storage`（含下次采集时间）
+- [x] Popup 显示上次采集结果 + 下次定时时间
+
+### RSA 密钥 + 稳定扩展 ID ✅
+- [x] `extension-keys/private.pem` + `public.der` — RSA 2048 密钥对
+- [x] 扩展 ID：`pplbaecpijioleoifnbibibegdpgabjb`（SHA256 公钥哈希派生）
+- [x] `extension/manifest.json` 添加 `"key"` 字段
+
+### 新增文件清单
+| 文件 | 说明 |
+|------|------|
+| `run_server.py` | PyInstaller 入口 + 系统托盘 |
+| `extension/` | Chrome 扩展 (MV3) — 7 文件 |
+| `scripts/install.bat` | 一键安装脚本 |
+| `scripts/package.bat` | 打包分发脚本 |
+| `src/api/` | FastAPI 后端 (4 端点) |
+| `scripts/start_server.bat` | 后端启动脚本（开发版） |
+| `extension-keys/` | RSA 密钥对 |
+| `xhs-feishu-server.spec` | PyInstaller 配置 |
+| `dist/xhs-feishu-sync-v0.1.0.zip` | 分发包 (58MB) |
+
+### 用户最终体验
+```
+① 下载 xhs-feishu-sync-v0.1.0.zip（58MB）
+② 解压 → 右键 install.bat → 以管理员身份运行
+③ Chrome 自动打开扩展管理页 → 加载扩展
+④ 点击图标 → 填飞书凭证 + XHS ID → 验证并保存
+⑤ 点击「🚀 开始」
+  → 自动打开 XHS 创作者中心
+  → 自动采集数据
+  → 桌面通知："✅ 采集完成"
+  → 飞书表格出现数据 ✓
+⑥ 以后每天 10:00 自动采集，无需任何操作
+```
+
+---
+
 ## 下一步行动（按优先级）
 
 1. ✅ **飞书凭证配置** — 已完成 (2026-07-13)
@@ -200,5 +315,7 @@
 6. ✅ **`platform` 字段** — 4表SQLite + 4表飞书 (2026-07-13)
 7. ✅ **`scripts/start_chrome.bat`** — Chrome 一键启动 (2026-07-13)
 8. ✅ **`note_detail_new` API 解析** — 笔记数据自动采集（完成于 2026-07-13）
-9. ⬜ **Bot 通知验证** — 配置 webhook 后测试
-10. ⬜ **README 编写**
+9. ✅ **Chrome Extension + 安装包** — v0.1.0 发布就绪（完成于 2026-07-15）
+10. ⬜ **团队内部测试** — 新电脑/虚拟机完整流程验证
+11. ⬜ **Bot 通知验证** — 配置 webhook 后测试
+12. ⬜ **Mac 安装脚本** — `install.sh`
