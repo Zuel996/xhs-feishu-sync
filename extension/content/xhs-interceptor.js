@@ -30,6 +30,9 @@ window.fetch = async function (...args) {
 
   try {
     const url = typeof args[0] === "string" ? args[0] : args[0]?.url || "";
+    // 🔍 诊断日志：显示所有 fetch 请求 URL（排查完删）
+    console.log("[xhs-feishu-sync] 🔍 fetch URL:", url);
+
     if (isTargetApi(url)) {
       // Clone response so we can read the body
       const cloned = response.clone();
@@ -67,6 +70,8 @@ window.XMLHttpRequest = function () {
   const originalSend = xhr.send;
   xhr.send = function (...sendArgs) {
     xhr.addEventListener("load", function () {
+      // 🔍 诊断日志：显示所有 XHR 请求 URL（排查完删）
+      console.log("[xhs-feishu-sync] 🔍 XHR URL:", _url);
       if (!isTargetApi(_url)) return;
       try {
         const data = JSON.parse(xhr.responseText);

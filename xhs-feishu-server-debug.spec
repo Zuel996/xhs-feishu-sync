@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('src', 'src')]
+datas = [('src', 'src'), ('config', 'config')]
 binaries = []
 hiddenimports = ['src', 'src.api', 'src.core', 'src.core.config', 'src.core.pipeline', 'src.loaders', 'src.loaders.bitable_client', 'src.loaders.sync_engine', 'src.transformers', 'src.collectors', 'src.storage']
 tmp_ret = collect_all('lark_oapi')

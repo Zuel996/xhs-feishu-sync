@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title xhs-feishu-sync — 打包分发
+title xhs-feishu-sync — Package
 
 cd /d "%~dp0.."
 
@@ -9,83 +9,83 @@ set "PACKAGE_NAME=xhs-feishu-sync-v%VERSION%"
 set "BUILD_DIR=build\package\%PACKAGE_NAME%"
 
 echo.
-echo  ╔══════════════════════════════════════════════════╗
-echo  ║     打包分发 — xhs-feishu-sync v%VERSION%         ║
-echo  ╚══════════════════════════════════════════════════╝
+echo  ====================================================
+echo    Package — xhs-feishu-sync v%VERSION%
+echo  ====================================================
 echo.
 
 :: ── Check prerequisites ──
 if not exist "dist\xhs-feishu-server\xhs-feishu-server.exe" (
-    echo  [ERROR] 未找到 dist\xhs-feishu-server\xhs-feishu-server.exe
-    echo          请先运行: pyinstaller --onedir --noconsole ...
+    echo  [ERROR] dist\xhs-feishu-server\xhs-feishu-server.exe not found
+    echo          Run PyInstaller first: pyinstaller xhs-feishu-server.spec
     pause
     exit /b 1
 )
 
 if not exist "extension\manifest.json" (
-    echo  [ERROR] 未找到 extension\manifest.json
+    echo  [ERROR] extension\manifest.json not found
     pause
     exit /b 1
 )
 
 :: ── Build package directory ──
-echo  [1/3] 构建打包目录 ...
+echo  [1/3] Building package directory ...
 if exist "%BUILD_DIR%" rmdir /s /q "%BUILD_DIR%"
 mkdir "%BUILD_DIR%" >nul 2>&1
 
 :: Copy server
 robocopy "dist\xhs-feishu-server" "%BUILD_DIR%\xhs-feishu-server" /E /NFL /NDL /NJH /NJS >nul
-echo         后端已复制
+echo        Server copied
 
 :: Copy extension
 robocopy "extension" "%BUILD_DIR%\extension" /E /NFL /NDL /NJH /NJS >nul
-echo         扩展已复制
+echo        Extension copied
 
 :: Copy installer
 copy "scripts\install.bat" "%BUILD_DIR%\install.bat" >nul
-echo         安装脚本已复制
+echo        Installer copied
 
 :: ── Create README ──
-echo  [2/3] 生成说明文件 ...
+echo  [2/3] Generating readme ...
 (
 echo # xhs-feishu-sync v%VERSION%
 echo.
-echo ## 安装步骤
+echo ## Installation
 echo.
-echo 1. 右键 `install.bat` → 以管理员身份运行
-echo 2. 等待安装完成
-echo 3. Chrome 会自动打开扩展管理页面
-echo 4. 开启「开发者模式」→「加载已解压的扩展程序」→ 选择 `%LOCALAPPDATA%\xhs-feishu-sync\extension`
-echo 5. 点击 Chrome 工具栏的插件图标 → 填写飞书凭证 → 添加账号 → 点击「开始」
+echo 1. Right-click `install.bat` ^-^> Run as administrator
+echo 2. Wait for installation to complete
+echo 3. Chrome will auto-open the extensions page
+echo 4. Enable "Developer mode" ^-^> "Load unpacked" ^-^> Select: %%LOCALAPPDATA%%\xhs-feishu-sync\extension
+echo 5. Click the extension icon ^-^> Fill Feishu credentials ^-^> Add accounts ^-^> Click "Start"
 echo.
-echo ## 日常使用
+echo ## Daily Use
 echo.
-echo - 后端会在开机时自动启动（系统托盘图标）
-echo - 点击插件图标 → 点「开始」→ 自动打开小红书创作者中心采集数据
-echo - 也可以每天等它自动采集（每日 10:00）
+echo - Backend auto-starts on boot (system tray icon)
+echo - Click extension icon ^-^> "Start" ^-^> Auto-collect from creator.xiaohongshu.com
+echo - Or wait for scheduled daily collection at 10:00 AM
 echo.
-echo ## 卸载
+echo ## Uninstall
 echo.
-echo 1. 关闭系统托盘中的 xhs-feishu-sync
-echo 2. 删除文件夹: %LOCALAPPDATA%\xhs-feishu-sync
-echo 3. Chrome 扩展管理页面移除扩展
-) > "%BUILD_DIR%\安装说明.md"
-echo         说明文件已生成
+echo 1. Close xhs-feishu-sync from system tray
+echo 2. Delete folder: %%LOCALAPPDATA%%\xhs-feishu-sync
+echo 3. Remove extension from chrome://extensions/
+) > "%BUILD_DIR%\README.md"
+echo        Readme generated
 
 :: ── Create ZIP ──
-echo  [3/3] 创建压缩包 ...
+echo  [3/3] Creating zip ...
 powershell -NoProfile -Command ^
   "Compress-Archive -Path '%BUILD_DIR%\*' -DestinationPath 'dist\%PACKAGE_NAME%.zip' -Force;"
-echo         压缩包已创建: dist\%PACKAGE_NAME%.zip
+echo        Package created: dist\%PACKAGE_NAME%.zip
 
 :: ── Done ──
 echo.
-echo  ═══════════════════════════════════════════════════
-echo   ✅ 打包完成！
+echo  ====================================================
+echo    Package complete!
 echo.
-echo     分发文件: dist\%PACKAGE_NAME%.zip
-echo     用户只需: 解压 → 右击 install.bat → 以管理员身份运行
-echo  ═══════════════════════════════════════════════════
+echo    Distribution: dist\%PACKAGE_NAME%.zip
+echo    User flow: Extract ^^^> Right-click install.bat ^^^> Run as administrator
+echo  ====================================================
 echo.
 
 pause

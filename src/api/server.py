@@ -12,8 +12,12 @@
 """
 
 import asyncio
+import json
 import logging
+import os
+import sys
 from datetime import date, datetime
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
@@ -26,8 +30,59 @@ from src.loaders.bitable_client import BitableClient
 
 logger = logging.getLogger(__name__)
 
+# ── 持久化配置路径 ──
+def _get_config_file_path() -> Path:
+    """获取飞书配置持久化文件路径。
+
+    优先使用 exe 所在目录（PyInstaller），回退到项目根目录（开发模式）。
+    """
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包模式：配置保存在 exe 旁边
+        exe_dir = Path(sys.executable).parent
+    else:
+        # 开发模式：配置保存在项目根目录
+        exe_dir = Path(__file__).resolve().parents[2]
+    return exe_dir / "feishu_config.json"
+
+
+def _save_config_to_file(config: FeishuConfig) -> None:
+    """将飞书配置持久化到本地文件。"""
+    try:
+        path = _get_config_file_path()
+        data = {
+            "app_id": config.app_id,
+            "app_secret": config.app_secret,
+            "bitable_app_token": config.bitable_app_token,
+            "bot_webhook_url": config.bot_webhook_url,
+        }
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        logger.info("飞书配置已持久化到 %s", path)
+    except Exception as e:
+        logger.warning("持久化飞书配置失败（不影响运行）: %s", e)
+
+
+def _load_config_from_file() -> Optional[FeishuConfig]:
+    """从本地文件加载飞书配置。返回 None 如果文件不存在或损坏。"""
+    try:
+        path = _get_config_file_path()
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        cfg = FeishuConfig(
+            app_id=data.get("app_id", ""),
+            app_secret=data.get("app_secret", ""),
+            bitable_app_token=data.get("bitable_app_token", ""),
+            bot_webhook_url=data.get("bot_webhook_url", ""),
+        )
+        logger.info("从 %s 加载了飞书配置", path)
+        return cfg
+    except Exception as e:
+        logger.warning("加载飞书配置失败: %s", e)
+        return None
+
+
 # ── 全局状态 ──
-_feishu_config: Optional[FeishuConfig] = None
+_feishu_config: Optional[FeishuConfig] = _load_config_from_file()
 _last_status: dict = {
     "last_run": None,
     "status": "idle",
@@ -126,6 +181,7 @@ async def set_config(config: FeishuConfigRequest):
         client = BitableClient(cfg)
         token = client.ensure_token()
         _feishu_config = cfg
+        _save_config_to_file(cfg)  # 持久化，重启不丢失
         return {
             "status": "ok",
             "token_prefix": token[:10] + "...",
