@@ -182,10 +182,41 @@ async def set_config(config: FeishuConfigRequest):
         token = client.ensure_token()
         _feishu_config = cfg
         _save_config_to_file(cfg)  # 持久化，重启不丢失
+
+        # 检查多维表格中已存在的表（不自动创建，仅报告状态）
+        expected_tables = {
+            "account_summary": "账号概览",
+            "note_metrics": "笔记数据明细",
+            "daily_snapshot": "每日快照",
+            "competitor_comparison": "竞品对比",
+            "account_manager": "账号管理",
+        }
+        tables_found = []
+        tables_missing = []
+        try:
+            existing_tables = client.list_tables()
+            existing_names = {t["name"] for t in existing_tables}
+            for key, name in expected_tables.items():
+                if name in existing_names:
+                    tables_found.append(name)
+                else:
+                    tables_missing.append(name)
+            if tables_missing:
+                logger.warning(
+                    "多维表格缺少以下表: %s。请在飞书后台手动创建。",
+                    tables_missing,
+                )
+            logger.info("多维表格已有表: %s", tables_found)
+        except Exception as e:
+            logger.warning("检查多维表格结构失败（不影响连接验证）: %s", e)
+            tables_missing = list(expected_tables.values())
+
         return {
             "status": "ok",
             "token_prefix": token[:10] + "...",
             "message": "飞书连接成功",
+            "tables_found": tables_found,
+            "tables_missing": tables_missing,
         }
     except Exception as e:
         _feishu_config = None
@@ -214,12 +245,14 @@ async def collect(request: CollectRequest):
             feishu_config=_feishu_config,
         )
 
+        sync_errors = result.get("errors", [])
         _last_status = {
             "last_run": date.today().isoformat(),
-            "status": "success",
+            "status": "success" if not sync_errors else "partial",
             "accounts_processed": 1,
             "notes_synced": result.get("notes_synced", 0),
-            "errors": [],
+            "profile_synced": result.get("profile_synced", False),
+            "errors": sync_errors,
         }
         return _last_status
 

@@ -134,11 +134,32 @@ curl http://localhost:9527/health
 
 ### 3. 加载 Chrome 插件
 
-1. 打开 Chrome，地址栏输入 `chrome://extensions/`
-2. 打开右上角「**开发者模式**」
-3. 点击「**加载已解压的扩展程序**」
-4. 选择项目中的 `extension/` 文件夹（如果用 `install.bat` 安装，路径是 `%LOCALAPPDATA%\xhs-feishu-sync\extension\`）
-5. 插件图标 🔴 出现在 Chrome 工具栏，加载完成
+#### 全新安装
+
+1. 打开 Chrome，地址栏输入 `chrome://extensions/` 回车
+2. 打开右上角「**开发者模式**」开关
+3. 点击左上角「**加载已解压的扩展程序**」
+4. 在弹出的文件选择框中，导航到以下路径并选中 `extension` 文件夹：
+
+   | 安装方式 | extension 文件夹路径 |
+   |---------|---------------------|
+   | `install.bat` 安装 | `%LOCALAPPDATA%\xhs-feishu-sync\extension\` |
+   | 源码开发 | 项目根目录下的 `extension\` 文件夹 |
+
+5. 点击「**选择文件夹**」，插件卡片出现即加载成功
+6. 点击 Chrome 右上角 🧩 拼图图标 → 找到 **xhs-feishu-sync** → 点击 📌 图钉固定到工具栏
+
+#### 重新安装（更新插件代码后）
+
+1. 打开 `chrome://extensions/`
+2. 找到 **xhs-feishu-sync** 卡片，点击「**移除**」→ 确认删除
+3. 按上面「全新安装」步骤 1-6 重新加载
+4. 打开插件弹窗 → 重新「验证并保存」飞书凭证
+5. 确认右上角状态指示灯为 🟢 绿色
+
+> **注意**：移除插件不会清除 `chrome.storage.local` 中的飞书凭证和账号列表。但如果插件 ID 变了，需要重新配置。
+>
+> 如果在 `chrome://extensions/` 页面看到「**无法从该来源安装**」的提示，说明 Chrome 策略限制了外部扩展加载。请以**管理员身份**运行 `scripts\install.bat`，它会通过注册表策略自动注册扩展 ID。
 
 ### 4. 配置飞书凭证
 

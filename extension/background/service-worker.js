@@ -156,7 +156,12 @@ async function handleCollect() {
         syncResults.push({
           account_id: matchedAccount.account_id,
           notes_synced: data.notes_synced || 0,
+          profile_synced: data.profile_synced || false,
+          errors: data.errors || [],
         });
+        if (data.errors && data.errors.length > 0) {
+          console.warn("[xhs-feishu-sync] Sync warnings:", data.errors);
+        }
       } else {
         const errData = await backendRes.json().catch(() => ({}));
         console.error("[xhs-feishu-sync] Backend error:", errData.detail || backendRes.status);

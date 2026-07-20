@@ -443,6 +443,7 @@ async def run_pipeline_from_dict(
         # ── 4. 飞书同步 ──
         notes_synced = 0
         profile_synced = False
+        sync_errors = []
 
         try:
             bitable_client = BitableClient(feishu_config)
@@ -457,15 +458,21 @@ async def run_pipeline_from_dict(
                     note_trends_map=note_trends_map,
                 )
                 for snap in account_snapshots:
-                    sync_engine.sync_daily_snapshot(snap)
+                    try:
+                        sync_engine.sync_daily_snapshot(snap)
+                    except Exception as e:
+                        sync_errors.append(f"每日快照同步失败 ({snap.snapshot_date}): {e}")
 
                 notes_synced = sync_results.get("note_metrics", 0)
-                profile_synced = True
+                profile_synced = notes_synced > 0 or sync_results.get("account_summary", 0) > 0
+                sync_errors.extend(sync_results.get("errors", []))
             else:
+                sync_errors.append("SyncEngine 未启用（离线模式），跳过飞书同步")
                 logger.warning("SyncEngine 未启用（离线模式），跳过飞书同步")
         except Exception as e:
             logger.exception("飞书同步失败")
-            raise
+            sync_errors.append(str(e))
+            # 不 re-raise：让调用方通过 errors 字段了解失败原因
 
         # ── 5. 更新同步状态 ──
         sync_repo = SyncStateRepo(session)
@@ -475,4 +482,5 @@ async def run_pipeline_from_dict(
     return {
         "profile_synced": profile_synced,
         "notes_synced": notes_synced,
+        "errors": sync_errors,
     }

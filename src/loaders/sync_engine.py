@@ -216,7 +216,7 @@ class SyncEngine:
             }
 
             if note_info.url:
-                fields["笔记链接"] = {"link": note_info.url, "text": note_info.title or "查看笔记"}
+                fields["笔记链接"] = note_info.url
 
             if note_trends:
                 fields["浏览量日增量"] = note_trends.views.dod_delta
@@ -320,24 +320,39 @@ class SyncEngine:
         note_trends_map: dict[str, NoteTrends],
         competitor_rank: Optional[int] = None,
         rank_change: str = "不变",
-    ) -> dict[str, int]:
+    ) -> dict:
         """执行完整同步：账号概览 + 笔记明细。
 
         每日快照由调用方单独调用 sync_daily_snapshot() 控制，
         以支持按日期分组的批量快照同步。
+
+        Returns:
+            {"account_summary": N, "note_metrics": N, "errors": [...]}
         """
         if not self.enabled:
             logger.debug("SyncEngine 离线模式，跳过飞书同步")
-            return {"account_summary": 0, "note_metrics": 0, "daily_snapshot": 0}
-        results = {}
+            return {"account_summary": 0, "note_metrics": 0, "errors": ["SyncEngine 离线模式"]}
+        results: dict = {"account_summary": 0, "note_metrics": 0, "errors": []}
+
+        # 检查所需表是否存在
+        missing_tables = []
+        for table_key in ["account_summary", "note_metrics"]:
+            if not self.table_ids.get(table_key):
+                missing_tables.append(table_key)
+        if missing_tables:
+            msg = f"飞书多维表格缺少以下表: {missing_tables}。请在飞书后台手动创建对应表格（账号概览/笔记数据明细/每日快照/竞品对比），或使用 BitableSchemaManager 初始化。"
+            logger.error(msg)
+            results["errors"].append(msg)
+            return results
 
         try:
             results["account_summary"] = self.sync_account_summary(
                 trends, competitor_rank, rank_change
             )
         except Exception as e:
-            logger.error("账号概览同步失败: %s", e)
-            results["account_summary"] = 0
+            err_msg = f"账号概览同步失败: {e}"
+            logger.error(err_msg)
+            results["errors"].append(err_msg)
 
         try:
             notes_tuples = []
@@ -351,8 +366,9 @@ class SyncEngine:
                     notes_tuples.append((info, snap, trend))
             results["note_metrics"] = self.sync_note_metrics(notes_tuples)
         except Exception as e:
-            logger.error("笔记明细同步失败: %s", e)
-            results["note_metrics"] = 0
+            err_msg = f"笔记明细同步失败: {e}"
+            logger.error(err_msg)
+            results["errors"].append(err_msg)
 
         return results
 

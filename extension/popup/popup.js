@@ -133,9 +133,18 @@ async function verifyAndSave() {
     });
 
     if (res.ok) {
+      const data = await res.json();
       await chrome.storage.local.set({ feishu: config });
       el.feishuMsg.className = "msg success";
-      el.feishuMsg.textContent = "✅ 飞书连接成功，配置已保存";
+      let msg = "✅ 飞书连接成功，配置已保存";
+      if (data.tables_missing && data.tables_missing.length > 0) {
+        msg += "\n⚠️ 缺少表格: " + data.tables_missing.join("、");
+        msg += "\n请在飞书后台手动创建这些表格";
+        el.feishuMsg.className = "msg warn";
+      } else if (data.tables_found && data.tables_found.length > 0) {
+        msg += " | 表格: " + data.tables_found.length + "个就绪";
+      }
+      el.feishuMsg.textContent = msg;
     } else {
       const err = await res.json();
       el.feishuMsg.className = "msg error";
@@ -259,8 +268,16 @@ async function triggerCollect() {
     const res = await chrome.runtime.sendMessage({ type: "COLLECT" });
 
     if (res && res.status === "ok") {
-      el.collectMsg.className = "msg success";
-      el.collectMsg.textContent = "✅ " + (res.message || "采集完成");
+      // Check for sync warnings from backend
+      const details = res.details || [];
+      const syncErrors = details.flatMap(d => d.errors || []);
+      if (syncErrors.length > 0) {
+        el.collectMsg.className = "msg error";
+        el.collectMsg.innerHTML = "⚠️ 同步异常: " + syncErrors.map(e => esc(e)).join("<br>");
+      } else {
+        el.collectMsg.className = "msg success";
+        el.collectMsg.textContent = "✅ " + (res.message || "采集完成");
+      }
     } else if (res && res.status === "no_data") {
       el.collectMsg.className = "msg error";
       el.collectMsg.textContent = "⚠️ 未采集到数据。请确认已登录小红书创作者中心，且 XHS用户ID 匹配。";

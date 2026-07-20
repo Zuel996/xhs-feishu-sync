@@ -236,15 +236,21 @@ def normalize_collect_result(
                 notes_by_date[nd] = []
             notes_by_date[nd].append(note)
 
-        for nd, date_notes in notes_by_date.items():
-            snap = profile_to_snapshot(result.profile, nd)
-            snap.notes_published_today = len(date_notes)
-            snap.total_interactions_today = sum(
-                n.total_interactions for n in date_notes
-            )
-            snap.total_views_today = sum(
-                n.views for n in date_notes
-            )
+        if notes_by_date:
+            # 按笔记日期分组创建快照
+            for nd, date_notes in notes_by_date.items():
+                snap = profile_to_snapshot(result.profile, nd)
+                snap.notes_published_today = len(date_notes)
+                snap.total_interactions_today = sum(
+                    n.total_interactions for n in date_notes
+                )
+                snap.total_views_today = sum(
+                    n.views for n in date_notes
+                )
+                account_snapshots.append(snap)
+        else:
+            # 无笔记数据时仍创建当日快照，确保账号概览可同步
+            snap = profile_to_snapshot(result.profile, sd)
             account_snapshots.append(snap)
 
         logger.info(
