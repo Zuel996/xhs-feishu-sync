@@ -108,34 +108,44 @@ if (navigator.sendBeacon) {
 // ═══════════════════════════════════════════════════
 
 function hookSWPostMessage() {
-  // ── 1. Hook 出站：页面 → SW ──
+  // 出站 hook 是否已安装成功（初始 + 延迟共享状态）
+  let swPostMessageHooked = false;
+
+  // 安装出站 hook 的通用函数
+  function installPostMessageHook(label) {
+    if (!navigator.serviceWorker.controller || !navigator.serviceWorker.controller.postMessage) return false;
+    const origPostMsg = navigator.serviceWorker.controller.postMessage.bind(
+      navigator.serviceWorker.controller
+    );
+    navigator.serviceWorker.controller.postMessage = function (message, transfer) {
+      DIAG.swPostMessageSent++;
+      try {
+        const preview = JSON.stringify(message).substring(0, 300);
+        console.log("[xhs-feishu-sync] 🔍 Page→SW" + label + ":", preview);
+        if (DIAG.swMsgSamples.length < 5) {
+          DIAG.swMsgSamples.push({ dir: "out", shape: describeShape(message), preview });
+        }
+        DIAG.lastSwMsgShape = describeShape(message);
+        scanForApiData(message);
+      } catch (_) { /* ignore */ }
+      saveDiagnostics();
+      return origPostMsg(message, transfer);
+    };
+    return true;
+  }
+
+  // ── 1. Hook 出站：页面 → SW（立即尝试）──
   if (navigator.serviceWorker.controller && navigator.serviceWorker.controller.postMessage) {
     try {
-      const origPostMsg = navigator.serviceWorker.controller.postMessage.bind(
-        navigator.serviceWorker.controller
-      );
-      navigator.serviceWorker.controller.postMessage = function (message, transfer) {
-        DIAG.swPostMessageSent++;
-        try {
-          const preview = JSON.stringify(message).substring(0, 300);
-          console.log("[xhs-feishu-sync] 🔍 Page→SW:", preview);
-          // 保存样本
-          if (DIAG.swMsgSamples.length < 5) {
-            DIAG.swMsgSamples.push({ dir: "out", shape: describeShape(message), preview });
-          }
-          DIAG.lastSwMsgShape = describeShape(message);
-          // 扫描消息中的 API 数据
-          scanForApiData(message);
-        } catch (_) { /* ignore */ }
-        saveDiagnostics();
-        return origPostMsg(message, transfer);
-      };
-      console.log("[xhs-feishu-sync] ✅ SW postMessage hook installed (outgoing)");
+      swPostMessageHooked = installPostMessageHook("");
+      if (swPostMessageHooked) {
+        console.log("[xhs-feishu-sync] ✅ SW postMessage hook installed (outgoing)");
+      }
     } catch (e) {
       console.log("[xhs-feishu-sync] ⚠️ Failed to hook SW postMessage:", e.message);
     }
   } else {
-    console.log("[xhs-feishu-sync] ⚠️ No SW controller for postMessage hook");
+    console.log("[xhs-feishu-sync] ⚠️ No SW controller for postMessage hook at document_start, will retry");
   }
 
   // ── 2. Hook 入站：SW → 页面（直接监听 message 事件）──
@@ -161,12 +171,24 @@ function hookSWPostMessage() {
   const delayedHook = setInterval(() => {
     hookAttempts++;
     if (navigator.serviceWorker.controller) {
-      // 如果之前没有 hook 到出站，现在补 hook
       DIAG.swController = true;
-      clearInterval(delayedHook);
-      console.log("[xhs-feishu-sync] ✅ SW controller became available after", hookAttempts * 500, "ms");
+      if (!swPostMessageHooked) {
+        try {
+          swPostMessageHooked = installPostMessageHook(" (delayed)");
+          if (swPostMessageHooked) {
+            console.log("[xhs-feishu-sync] ✅ SW postMessage hook installed (delayed) after", hookAttempts * 500, "ms");
+          }
+        } catch (e) {
+          console.log("[xhs-feishu-sync] ⚠️ Failed to hook SW postMessage (delayed):", e.message);
+        }
+      }
     }
-    if (hookAttempts > 20) clearInterval(delayedHook); // 最多等 10 秒
+    if (swPostMessageHooked || hookAttempts > 20) {
+      clearInterval(delayedHook);
+      if (!swPostMessageHooked) {
+        console.log("[xhs-feishu-sync] ⚠️ SW postMessage hook never installed after", hookAttempts * 500, "ms");
+      }
+    }
   }, 500);
 }
 
@@ -414,7 +436,7 @@ function mergeNotes(notes) {
 
 function extractProfile(data) {
   const result = data.data || data;
-  if (!result.red_num && !result.name && !result.fans_count) return null;
+  if (!result.red_id && !result.name && !result.fans_count && !result.fansCount) return null;
   return {
     account_id: "",
     xhs_user_id: result.red_id || result.xhs_user_id || "",
