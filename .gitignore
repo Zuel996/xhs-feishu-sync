@@ -34,6 +34,7 @@ data/local.db
 data/*.db
 data/debug/
 .browser_state/
+feishu_config.json
 
 # Testing
 .pytest_cache/

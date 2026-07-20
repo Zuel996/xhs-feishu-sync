@@ -151,13 +151,72 @@ own_accounts:
 
 ## 日常使用
 
+### Chrome 插件模式（推荐）
+
+Chrome 插件自动拦截小红书创作者中心 API 数据，通过本地 API 服务同步到飞书。
+
+**① 启动后端服务**
+
+后端是一个 Python API 服务，负责飞书验证、数据处理和同步。**窗口不能关，关了服务就停了。**
+
+<details>
+<summary><b>方式一：双击脚本（推荐）</b></summary>
+
+在文件资源管理器中打开 `scripts\start_server.bat`，双击运行。会自动检测 Python 版本并启动服务：
+
+```
+============================================================
+  xhs-feishu-sync — API Server
+============================================================
+
+  Server running at http://localhost:9527
+  Press Ctrl+C to stop
+```
+
+</details>
+
+<details>
+<summary><b>方式二：命令行</b></summary>
+
+打开 PowerShell，执行：
+
+```powershell
+cd C:\Users\你的用户名\Desktop\work\auto
+python -m uvicorn src.api.server:app --host 127.0.0.1 --port 9527 --log-level info
+```
+
+</details>
+
+<br>
+
+**② 加载 Chrome 插件**
+
+1. 打开 Chrome，地址栏输入 `chrome://extensions/`
+2. 打开右上角「**开发者模式**」
+3. 点击「**加载已解压的扩展程序**」
+4. 选择项目中的 `extension/` 文件夹
+5. 插件图标出现在 Chrome 工具栏，安装完成
+
+**③ 配置并采集**
+
+1. 点击 Chrome 工具栏的插件图标
+2. 状态栏显示 **绿色圆点 + "后端运行中"** 说明连接成功
+3. 填入飞书凭证 → 点击「验证并保存」
+4. 添加监控账号（账号ID + XHS用户ID）
+5. 打开 [小红书创作者中心](https://creator.xiaohongshu.com) 并登录
+6. 回到插件 → 点击「🚀 开始」→ 自动采集 → 数据到飞书
+
+> 插件每天也会自动定时采集（通过 `chrome.alarms`），无需手动操作。
+
+---
+
 ### 一键采集（最简单）
 
 双击项目根目录下的 `每日采集.bat`，自动完成采集 → 转换 → 同步全流程。适合日常使用。
 
 > 前提：已在飞书「账号管理」表中填写账号信息并勾选「启用」。
 
-### 浏览器自动采集（推荐有实时数据需求的场景）
+### 浏览器 CDP 采集（有实时数据需求的场景）
 
 每天跑一次即可获取实时互动数据：
 

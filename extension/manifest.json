@@ -20,7 +20,8 @@
     {
       "matches": ["*://creator.xiaohongshu.com/*"],
       "js": ["content/xhs-interceptor.js"],
-      "run_at": "document_start"
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ]
 }

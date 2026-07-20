@@ -194,6 +194,37 @@ label { position: relative; }
 /* ── Actions ── */
 .actions { padding: 16px !important; background: transparent !important; border: none !important; }
 
+/* ── Diagnostics ── */
+.diag-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+}
+.diag-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  background: #f7f8fa;
+  border-radius: 4px;
+}
+.diag-row.ok { border-left: 3px solid #00b42a; }
+.diag-row.warn { border-left: 3px solid #ff7d00; }
+.diag-row.err { border-left: 3px solid #f53f3f; }
+.diag-label { color: #86909c; margin-right: 8px; white-space: nowrap; }
+.diag-val { text-align: right; word-break: break-all; }
+.diag-sub { padding-left: 12px; }
+.diag-sep {
+  font-size: 10px;
+  font-weight: 600;
+  color: #c9cdd4;
+  padding: 4px 0 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 /* ── Footer ── */
 .footer {
   padding: 8px 16px;

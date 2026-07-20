@@ -31,6 +31,8 @@ const el = {
   btnCollect: $("#btnCollect"),
   collectMsg: $("#collectMsg"),
   lastRun: $("#lastRun"),
+  diagContent: $("#diagContent"),
+  btnRefreshDiag: $("#btnRefreshDiag"),
 };
 
 // ═══════════════════════════════════════════════════
@@ -52,6 +54,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Collapsible sections
   bindCollapse("feishuHeader", "feishuBody", "feishuToggle");
   bindCollapse("accountsHeader", "accountsBody", "accountsToggle");
+  bindCollapse("diagHeader", "diagBody", "diagToggle");
+
+  // Diagnostics
+  el.btnRefreshDiag.addEventListener("click", loadDiagnostics);
+  loadDiagnostics();
 
   // Enter key to add account
   el.newXhsUserId.addEventListener("keydown", (e) => {
@@ -306,6 +313,108 @@ async function updateLastRun() {
   } catch {
     // ignore
   }
+}
+
+// ═══════════════════════════════════════════════════
+// Diagnostics
+// ═══════════════════════════════════════════════════
+
+async function loadDiagnostics() {
+  el.diagContent.innerHTML = '<div class="empty-hint">检测中...</div>';
+
+  // Try to read from chrome.storage (saved by content script)
+  const stored = await chrome.storage.local.get(["xhs_diagnostics"]);
+  let diag = stored.xhs_diagnostics;
+
+  // Also try to get live data from active XHS tabs
+  try {
+    const tabs = await chrome.tabs.query({ url: "*://creator.xiaohongshu.com/*" });
+    if (tabs.length > 0) {
+      const live = await chrome.tabs.sendMessage(tabs[0].id, { type: "GET_DIAGNOSTICS" });
+      if (live) diag = live;
+    }
+  } catch {
+    // Content script may not be ready — use stored data
+  }
+
+  renderDiagnostics(diag);
+}
+
+function renderDiagnostics(diag) {
+  if (!diag) {
+    el.diagContent.innerHTML = `
+      <div class="diag-table">
+        <div class="diag-row warn"><span class="diag-label">状态</span><span>未检测到数据</span></div>
+        <div class="diag-row"><span class="diag-label">提示</span><span>请打开 creator.xiaohongshu.com 页面</span></div>
+      </div>`;
+    return;
+  }
+
+  const rows = [];
+  function add(label, value, cls) { rows.push({ label, value: String(value), cls: cls || "" }); }
+
+  // ── CS 状态 ──
+  add("🟢 CS 加载", "是", "ok");
+
+  // ── SW Controller ──
+  const swCtrl = diag.swController ? "⚠️ 是（已被 SW 控制）" : "✅ 否";
+  add("SW Controller", swCtrl, diag.swController ? "warn" : "ok");
+
+  // ── SW 注册列表 ──
+  if (diag.swRegistrations && diag.swRegistrations.length > 0) {
+    diag.swRegistrations.forEach((reg, i) => {
+      add(`SW #{i + 1}`, reg.scope, "warn");
+    });
+  }
+
+  // ══════ 🎯 SW 通道（关键）══════
+  add("── SW 通道 ──", "", "");
+  add("📤 Page→SW", diag.swPostMessageSent || 0, diag.swPostMessageSent > 0 ? "ok" : "warn");
+  add("📥 SW→Page", diag.swMessageReceived || 0, diag.swMessageReceived > 0 ? "ok" : "warn");
+  add("📡 BroadcastChannel 发", diag.broadcastSent || 0, diag.broadcastSent > 0 ? "ok" : "");
+  add("📡 BroadcastChannel 收", diag.broadcastReceived || 0, diag.broadcastReceived > 0 ? "ok" : "");
+  add("📨 Window postMsg", diag.windowPostMessage || 0, "");
+
+  // ── 消息结构样本 ──
+  if (diag.lastSwMsgShape) {
+    add("SW 消息结构", diag.lastSwMsgShape, "");
+  }
+  if (diag.swMsgSamples && diag.swMsgSamples.length > 0) {
+    diag.swMsgSamples.forEach((s, i) => {
+      add(`  样本${i + 1} ${s.dir}`, s.shape + " " + (s.preview || "").substring(0, 60), "");
+    });
+  }
+
+  // ══════ 兜底通道 ══════
+  add("── 兜底通道 ──", "", "");
+  add("Fetch 调用", diag.fetchCalled || 0, diag.fetchCalled > 0 ? "ok" : "");
+  add("XHR 调用", diag.xhrCalled || 0, diag.xhrCalled > 0 ? "ok" : "");
+
+  // ── Hook 存活 ──
+  if (diag.hooksStillInPlace) {
+    add("Fetch Hook", diag.hooksStillInPlace.fetch ? "✅" : "❌被覆盖", diag.hooksStillInPlace.fetch ? "ok" : "err");
+    add("XHR Hook", diag.hooksStillInPlace.xhr ? "✅" : "❌被覆盖", diag.hooksStillInPlace.xhr ? "ok" : "err");
+  }
+
+  // ── 运行时间 ──
+  if (diag.scriptLoadTime) {
+    const elapsed = Math.round((Date.now() - diag.scriptLoadTime) / 1000);
+    add("⏱ 已运行", `${elapsed}s`, "");
+  }
+
+  // ── 构建 ──
+  let html = '<div class="diag-table">';
+  for (const r of rows) {
+    if (!r.label.startsWith("──") && !r.label.startsWith("  ") && r.label !== "" && r.value === "" && r.cls === "") continue;
+    if (r.label.startsWith("──")) {
+      html += `<div class="diag-sep">${r.label}</div>`;
+    } else {
+      const labelCls = r.label.startsWith("  ") ? "diag-sub" : "";
+      html += `<div class="diag-row ${r.cls}"><span class="diag-label ${labelCls}">${r.label}</span><span class="diag-val">${r.value}</span></div>`;
+    }
+  }
+  html += "</div>";
+  el.diagContent.innerHTML = html;
 }
 
 // ═══════════════════════════════════════════════════
